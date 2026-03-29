@@ -225,6 +225,86 @@ function initTables(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_forum_sources_enabled ON forum_sources(enabled);
   `);
 
+  // ── Apps Market tables ──────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      external_id TEXT NOT NULL,
+      store TEXT NOT NULL,
+      name TEXT NOT NULL,
+      developer TEXT,
+      description TEXT,
+      icon_url TEXT,
+      category TEXT DEFAULT 'general',
+      subcategory TEXT,
+      price REAL DEFAULT 0,
+      is_free INTEGER DEFAULT 1,
+      rating REAL DEFAULT 0,
+      rating_count INTEGER DEFAULT 0,
+      downloads INTEGER DEFAULT 0,
+      size_mb REAL DEFAULT 0,
+      url TEXT,
+      tags TEXT DEFAULT '[]',
+      data_json TEXT DEFAULT '{}',
+      first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(external_id, store)
+    );
+
+    CREATE TABLE IF NOT EXISTS app_rankings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      app_id INTEGER REFERENCES app_entries(id) ON DELETE CASCADE,
+      store TEXT NOT NULL,
+      category TEXT,
+      rank INTEGER NOT NULL,
+      previous_rank INTEGER,
+      rank_delta INTEGER DEFAULT 0,
+      rank_type TEXT DEFAULT 'top_free',
+      recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS app_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      app_id INTEGER REFERENCES app_entries(id) ON DELETE CASCADE,
+      rating REAL,
+      rating_count INTEGER,
+      downloads INTEGER,
+      revenue_estimate REAL DEFAULT 0,
+      recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS store_categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store TEXT NOT NULL,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL,
+      parent_slug TEXT,
+      app_count INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(store, slug)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_app_entries_external_id ON app_entries(external_id);
+    CREATE INDEX IF NOT EXISTS idx_app_entries_store ON app_entries(store);
+    CREATE INDEX IF NOT EXISTS idx_app_entries_category ON app_entries(category);
+    CREATE INDEX IF NOT EXISTS idx_app_entries_rating ON app_entries(rating DESC);
+    CREATE INDEX IF NOT EXISTS idx_app_entries_downloads ON app_entries(downloads DESC);
+    CREATE INDEX IF NOT EXISTS idx_app_entries_first_seen ON app_entries(first_seen DESC);
+    CREATE INDEX IF NOT EXISTS idx_app_rankings_app_id ON app_rankings(app_id);
+    CREATE INDEX IF NOT EXISTS idx_app_rankings_store ON app_rankings(store);
+    CREATE INDEX IF NOT EXISTS idx_app_rankings_rank_type ON app_rankings(rank_type);
+    CREATE INDEX IF NOT EXISTS idx_app_rankings_recorded_at ON app_rankings(recorded_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_app_rankings_rank_delta ON app_rankings(rank_delta DESC);
+    CREATE INDEX IF NOT EXISTS idx_app_snapshots_app_id ON app_snapshots(app_id);
+    CREATE INDEX IF NOT EXISTS idx_app_snapshots_recorded_at ON app_snapshots(recorded_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_store_categories_store ON store_categories(store);
+    CREATE INDEX IF NOT EXISTS idx_store_categories_slug ON store_categories(slug);
+  `);
+
   // Migration: add target_dashboard column if missing (for existing DBs)
   try {
     db.prepare("SELECT target_dashboard FROM cron_configs LIMIT 0").run();
@@ -750,4 +830,213 @@ export function crossReferenceForumWords(): { postsUpdated: number; wordsLinked:
   transaction();
 
   return { postsUpdated, wordsLinked, frequenciesCreated };
+}
+
+// ── Apps Market helpers ──────────────────────────────────────
+
+export function getAppEntries(opts?: { store?: string; category?: string; search?: string; is_free?: boolean; limit?: number; offset?: number; sort?: string }) {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.store) { conditions.push('store = @store'); params.store = opts.store; }
+  if (opts?.category) { conditions.push('category = @category'); params.category = opts.category; }
+  if (opts?.search) { conditions.push('(name LIKE @search OR developer LIKE @search)'); params.search = '%' + opts.search + '%'; }
+  if (opts?.is_free !== undefined) { conditions.push('is_free = @is_free'); params.is_free = opts.is_free ? 1 : 0; }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const limit = opts?.limit || 50;
+  const offset = opts?.offset || 0;
+
+  let orderBy = 'downloads DESC, rating DESC';
+  if (opts?.sort === 'rating') orderBy = 'rating DESC, rating_count DESC';
+  if (opts?.sort === 'newest') orderBy = 'first_seen DESC';
+  if (opts?.sort === 'name') orderBy = 'name ASC';
+  if (opts?.sort === 'downloads') orderBy = 'downloads DESC';
+
+  return db.prepare(`SELECT * FROM app_entries ${where} ORDER BY ${orderBy} LIMIT @limit OFFSET @offset`).all({ ...params, limit, offset });
+}
+
+export function getAppStats() {
+  const db = getDb();
+  const total = db.prepare('SELECT COUNT(*) as count FROM app_entries').get() as { count: number };
+
+  const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
+  const newThisWeek = db.prepare('SELECT COUNT(*) as count FROM app_entries WHERE first_seen >= ?').get(weekAgo) as { count: number };
+
+  const avgRating = db.prepare('SELECT AVG(rating) as avg FROM app_entries WHERE rating > 0').get() as { avg: number };
+
+  const topClimber = db.prepare(`
+    SELECT ae.name, ar.rank_delta FROM app_rankings ar
+    JOIN app_entries ae ON ar.app_id = ae.id
+    WHERE ar.rank_delta > 0
+    ORDER BY ar.rank_delta DESC LIMIT 1
+  `).get() as { name: string; rank_delta: number } | undefined;
+
+  const storeBreakdown = db.prepare('SELECT store, COUNT(*) as count FROM app_entries GROUP BY store ORDER BY count DESC').all();
+  const categoryBreakdown = db.prepare('SELECT category, COUNT(*) as count FROM app_entries GROUP BY category ORDER BY count DESC LIMIT 10').all();
+
+  return {
+    total: total.count,
+    newThisWeek: newThisWeek.count,
+    avgRating: Math.round((avgRating.avg || 0) * 100) / 100,
+    topClimber: topClimber ? { name: topClimber.name, delta: topClimber.rank_delta } : null,
+    storeBreakdown,
+    categoryBreakdown,
+  };
+}
+
+export function getAppRankings(opts?: { store?: string; category?: string; rank_type?: string; limit?: number; offset?: number }) {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.store) { conditions.push('ar.store = @store'); params.store = opts.store; }
+  if (opts?.category) { conditions.push('ar.category = @category'); params.category = opts.category; }
+  if (opts?.rank_type) { conditions.push('ar.rank_type = @rank_type'); params.rank_type = opts.rank_type; }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const limit = opts?.limit || 50;
+  const offset = opts?.offset || 0;
+
+  return db.prepare(`
+    SELECT ar.*, ae.name, ae.developer, ae.icon_url, ae.rating, ae.rating_count, ae.downloads, ae.is_free, ae.price, ae.url as app_url
+    FROM app_rankings ar
+    JOIN app_entries ae ON ar.app_id = ae.id
+    ${where}
+    ORDER BY ar.rank ASC, ar.recorded_at DESC
+    LIMIT @limit OFFSET @offset
+  `).all({ ...params, limit, offset });
+}
+
+export function getTopMovers(opts?: { store?: string; direction?: 'up' | 'down'; limit?: number }) {
+  const db = getDb();
+  const conditions: string[] = ['ar.rank_delta != 0'];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.store) { conditions.push('ar.store = @store'); params.store = opts.store; }
+  if (opts?.direction === 'up') { conditions.push('ar.rank_delta > 0'); }
+  if (opts?.direction === 'down') { conditions.push('ar.rank_delta < 0'); }
+
+  const where = 'WHERE ' + conditions.join(' AND ');
+  const limit = opts?.limit || 20;
+
+  return db.prepare(`
+    SELECT ar.*, ae.name, ae.developer, ae.icon_url, ae.rating, ae.downloads, ae.category, ae.is_free
+    FROM app_rankings ar
+    JOIN app_entries ae ON ar.app_id = ae.id
+    ${where}
+    ORDER BY ABS(ar.rank_delta) DESC
+    LIMIT @limit
+  `).all({ ...params, limit });
+}
+
+export function getNewApps(opts?: { store?: string; limit?: number }) {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.store) { conditions.push('store = @store'); params.store = opts.store; }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const limit = opts?.limit || 20;
+
+  return db.prepare(`
+    SELECT * FROM app_entries ${where}
+    ORDER BY first_seen DESC
+    LIMIT @limit
+  `).all({ ...params, limit });
+}
+
+export function getAppHistory(appId: number) {
+  const db = getDb();
+  const app = db.prepare('SELECT * FROM app_entries WHERE id = ?').get(appId);
+  const rankings = db.prepare('SELECT * FROM app_rankings WHERE app_id = ? ORDER BY recorded_at ASC').all(appId);
+  const snapshots = db.prepare('SELECT * FROM app_snapshots WHERE app_id = ? ORDER BY recorded_at ASC').all(appId);
+  return { app, rankings, snapshots };
+}
+
+export function upsertAppEntry(data: {
+  external_id: string; store: string; name: string; developer?: string; description?: string;
+  icon_url?: string; category?: string; subcategory?: string; price?: number; is_free?: boolean;
+  rating?: number; rating_count?: number; downloads?: number; size_mb?: number; url?: string;
+  tags?: string; data_json?: string;
+}) {
+  const db = getDb();
+  return db.prepare(`
+    INSERT INTO app_entries (external_id, store, name, developer, description, icon_url, category, subcategory, price, is_free, rating, rating_count, downloads, size_mb, url, tags, data_json)
+    VALUES (@external_id, @store, @name, @developer, @description, @icon_url, @category, @subcategory, @price, @is_free, @rating, @rating_count, @downloads, @size_mb, @url, @tags, @data_json)
+    ON CONFLICT(external_id, store) DO UPDATE SET
+      name = @name,
+      developer = @developer,
+      description = @description,
+      icon_url = @icon_url,
+      category = @category,
+      subcategory = @subcategory,
+      price = @price,
+      is_free = @is_free,
+      rating = @rating,
+      rating_count = @rating_count,
+      downloads = @downloads,
+      size_mb = @size_mb,
+      url = @url,
+      tags = @tags,
+      data_json = @data_json,
+      last_seen = CURRENT_TIMESTAMP,
+      updated_at = CURRENT_TIMESTAMP
+  `).run({
+    external_id: data.external_id,
+    store: data.store,
+    name: data.name,
+    developer: data.developer || null,
+    description: data.description || null,
+    icon_url: data.icon_url || null,
+    category: data.category || 'general',
+    subcategory: data.subcategory || null,
+    price: data.price || 0,
+    is_free: data.is_free !== false ? 1 : 0,
+    rating: data.rating || 0,
+    rating_count: data.rating_count || 0,
+    downloads: data.downloads || 0,
+    size_mb: data.size_mb || 0,
+    url: data.url || null,
+    tags: data.tags || '[]',
+    data_json: data.data_json || '{}',
+  });
+}
+
+export function insertAppRanking(data: {
+  app_id: number; store: string; category?: string; rank: number;
+  previous_rank?: number; rank_delta?: number; rank_type?: string;
+}) {
+  const db = getDb();
+  return db.prepare(`
+    INSERT INTO app_rankings (app_id, store, category, rank, previous_rank, rank_delta, rank_type)
+    VALUES (@app_id, @store, @category, @rank, @previous_rank, @rank_delta, @rank_type)
+  `).run({
+    app_id: data.app_id,
+    store: data.store,
+    category: data.category || null,
+    rank: data.rank,
+    previous_rank: data.previous_rank || null,
+    rank_delta: data.rank_delta || 0,
+    rank_type: data.rank_type || 'top_free',
+  });
+}
+
+export function insertAppSnapshot(data: {
+  app_id: number; rating?: number; rating_count?: number;
+  downloads?: number; revenue_estimate?: number;
+}) {
+  const db = getDb();
+  return db.prepare(`
+    INSERT INTO app_snapshots (app_id, rating, rating_count, downloads, revenue_estimate)
+    VALUES (@app_id, @rating, @rating_count, @downloads, @revenue_estimate)
+  `).run({
+    app_id: data.app_id,
+    rating: data.rating || null,
+    rating_count: data.rating_count || null,
+    downloads: data.downloads || null,
+    revenue_estimate: data.revenue_estimate || 0,
+  });
 }

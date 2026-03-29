@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { getDb, crossReferenceForumWords } from './db';
+import { getDb, crossReferenceForumWords, upsertAppEntry, insertAppRanking, insertAppSnapshot } from './db';
 
 const INBOX_DIR = path.join(process.cwd(), 'data', 'inbox');
 
@@ -47,12 +47,35 @@ export interface InboxForumPost {
   data?: Record<string, unknown>;
 }
 
+export interface InboxApp {
+  external_id: string;
+  store: string;
+  name: string;
+  developer?: string;
+  description?: string;
+  icon_url?: string;
+  category?: string;
+  subcategory?: string;
+  price?: number;
+  is_free?: boolean;
+  rating?: number;
+  rating_count?: number;
+  downloads?: number;
+  size_mb?: number;
+  url?: string;
+  tags?: string[];
+  rank?: number;
+  rank_type?: string;
+  data?: Record<string, unknown>;
+}
+
 export interface InboxPayload {
   source?: string;
   target?: string;
   trends?: InboxTrend[];
   words?: InboxWord[];
   forum_posts?: InboxForumPost[];
+  apps?: InboxApp[];
   cron_config_id?: number;
 }
 
@@ -260,9 +283,84 @@ export function ingestPayload(payload: InboxPayload) {
     try { crossReferenceForumWords(); } catch { /* non-critical */ }
   }
 
+  // ── Apps Market ingestion ──────────────────────────────────
+  if ((payload.target === 'apps-market' || payload.apps) && payload.apps && Array.isArray(payload.apps)) {
+    const batchApps = db.transaction((apps: InboxApp[]) => {
+      for (const app of apps) {
+        // Upsert the app entry (dedup by external_id + store)
+        const result = upsertAppEntry({
+          external_id: app.external_id,
+          store: app.store,
+          name: app.name,
+          developer: app.developer,
+          description: app.description,
+          icon_url: app.icon_url,
+          category: app.category,
+          subcategory: app.subcategory,
+          price: app.price,
+          is_free: app.is_free,
+          rating: app.rating,
+          rating_count: app.rating_count,
+          downloads: app.downloads,
+          size_mb: app.size_mb,
+          url: app.url,
+          tags: JSON.stringify(app.tags || []),
+          data_json: JSON.stringify(app.data || {}),
+        });
+
+        // Resolve app_id (could be insert or update)
+        let appId = Number(result.lastInsertRowid);
+        if (!appId || result.changes === 0) {
+          const existing = db.prepare('SELECT id FROM app_entries WHERE external_id = ? AND store = ?').get(app.external_id, app.store) as { id: number } | undefined;
+          if (existing) appId = existing.id;
+        }
+        // If changes > 0 but lastInsertRowid is 0, it was an update — look up
+        if (result.changes > 0 && !appId) {
+          const existing = db.prepare('SELECT id FROM app_entries WHERE external_id = ? AND store = ?').get(app.external_id, app.store) as { id: number } | undefined;
+          if (existing) appId = existing.id;
+        }
+
+        if (!appId) continue;
+
+        // Insert ranking if rank is provided
+        if (app.rank !== undefined && app.rank !== null) {
+          // Get the most recent previous ranking for delta calculation
+          const prevRanking = db.prepare(
+            'SELECT rank FROM app_rankings WHERE app_id = ? AND store = ? AND rank_type = ? ORDER BY recorded_at DESC LIMIT 1'
+          ).get(appId, app.store, app.rank_type || 'top_free') as { rank: number } | undefined;
+
+          const previousRank = prevRanking?.rank || null;
+          // rank_delta: positive = climbed (rank number decreased), negative = dropped (rank number increased)
+          const rankDelta = previousRank ? (previousRank - app.rank) : 0;
+
+          insertAppRanking({
+            app_id: appId,
+            store: app.store,
+            category: app.category,
+            rank: app.rank,
+            previous_rank: previousRank || undefined,
+            rank_delta: rankDelta,
+            rank_type: app.rank_type || 'top_free',
+          });
+        }
+
+        // Insert snapshot for growth tracking
+        insertAppSnapshot({
+          app_id: appId,
+          rating: app.rating,
+          rating_count: app.rating_count,
+          downloads: app.downloads,
+          revenue_estimate: 0,
+        });
+      }
+    });
+
+    batchApps(payload.apps);
+  }
+
   // Log cron run if applicable
   if (payload.cron_config_id) {
-    const itemCount = (payload.trends?.length || 0) + (payload.words?.length || 0) + (payload.forum_posts?.length || 0);
+    const itemCount = (payload.trends?.length || 0) + (payload.words?.length || 0) + (payload.forum_posts?.length || 0) + (payload.apps?.length || 0);
     db.prepare(`
       INSERT INTO cron_runs (cron_config_id, status, items_processed, started_at, completed_at)
       VALUES (?, 'success', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
