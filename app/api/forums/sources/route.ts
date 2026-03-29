@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getForumSources, createForumSource, updateForumSource, deleteForumSource } from '@/lib/db';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     const sources = getForumSources();

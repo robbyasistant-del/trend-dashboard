@@ -8,7 +8,7 @@ const NAV_ITEMS = [
   { href: '/regions', label: 'Region Analysis', icon: '🗺️', active: false },
   { href: '/calendar', label: 'Calendar Trends', icon: '📅', active: false },
   { href: '/words', label: 'Words Trends', icon: '💬', active: true },
-  { href: '/forums', label: 'Games Forums', icon: '🎮', active: false },
+  { href: '/forums', label: 'Games Forums', icon: '🎮', active: true },
   { href: '/apps-market', label: 'Apps Market', icon: '📱', active: false },
   { divider: true },
   { href: '/crons', label: 'Crons Settings', icon: '⚙️', active: true },
