@@ -214,6 +214,70 @@ const batchInsertCluster = db.transaction(() => {
 });
 batchInsertCluster();
 
+// ── Seed cron configs for words ────────────────────────────────
+
+// Ensure cron_configs table exists (it should from main seed, but be safe)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS cron_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    prompt TEXT NOT NULL,
+    schedule TEXT NOT NULL,
+    agent TEXT DEFAULT 'default',
+    source_type TEXT,
+    target_dashboard TEXT,
+    enabled INTEGER DEFAULT 1,
+    last_run DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+const insertCron = db.prepare(`
+  INSERT OR IGNORE INTO cron_configs (name, description, prompt, schedule, agent, source_type, target_dashboard, enabled)
+  VALUES (@name, @description, @prompt, @schedule, @agent, @source_type, @target_dashboard, @enabled)
+`);
+
+const wordCrons = [
+  {
+    name: 'Word Extractor - Trends',
+    description: 'Extracts trending words and terms from Reddit, TikTok, and Twitter gaming discussions. Analyzes frequency, growth, and sentiment.',
+    prompt: 'Search Reddit (r/gaming, r/AndroidGaming, r/iosgaming), TikTok, and Twitter for casual gaming discussions from the last 24h. Extract the most frequently used words and terms. For each word, determine: frequency count, category (genre/mechanic/aesthetic/theme/feature/monetization), growth rate vs last week, and sentiment. Output as JSON with format: { "target": "words", "words": [{ "word": "...", "source": "...", "category": "...", "frequency": N, "score": N, "growth": N, "sentiment": N }] }',
+    schedule: '0 */6 * * *',
+    agent: 'default',
+    source_type: 'multi',
+    target_dashboard: 'words',
+    enabled: 1,
+  },
+  {
+    name: 'Word Extractor - Tags',
+    description: 'Extracts and analyzes hashtags and tags from social media gaming content to identify emerging terminology.',
+    prompt: 'Search TikTok hashtags, Twitter hashtags, and Reddit flair tags related to casual/mobile gaming. Extract trending tags, their usage frequency, and categorize them. Focus on new or rapidly growing tags. Output as JSON with format: { "target": "words", "words": [{ "word": "...", "source": "...", "category": "...", "frequency": N, "score": N, "growth": N }] }',
+    schedule: '0 8,20 * * *',
+    agent: 'default',
+    source_type: 'social-tags',
+    target_dashboard: 'words',
+    enabled: 1,
+  },
+  {
+    name: 'Word Cluster Builder',
+    description: 'Analyzes existing word entries to build and update semantic clusters. Groups related terms by meaning and usage context.',
+    prompt: 'Analyze the current word entries in the Words Trends database. Group related words into semantic clusters based on: co-occurrence in discussions, categorical similarity, and usage context. For each cluster, identify a centroid word and coherence score. Update existing clusters or create new ones as needed. Output cluster definitions as JSON.',
+    schedule: '0 3 * * *',
+    agent: 'claude-sonnet',
+    source_type: 'analysis',
+    target_dashboard: 'words',
+    enabled: 1,
+  },
+];
+
+let cronsInserted = 0;
+for (const c of wordCrons) {
+  const result = insertCron.run(c);
+  if (result.changes > 0) cronsInserted++;
+}
+
 db.close();
 
 console.log('✅ Word seed complete! Created:');
@@ -221,4 +285,5 @@ console.log(`   ${wordEntries.length} word entries`);
 console.log(`   ${allWords.length * 14} frequency records (14 days × ${allWords.length} words)`);
 console.log(`   ${competitions.length} competition pairs`);
 console.log(`   ${clusters.length} word clusters`);
+console.log(`   ${cronsInserted} cron configs for words`);
 console.log('\nRun: npm run dev');

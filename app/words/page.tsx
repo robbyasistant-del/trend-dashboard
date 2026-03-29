@@ -115,6 +115,11 @@ export default function WordsPage() {
   const [loading, setLoading] = useState(true);
   const [sortKey, setSortKey] = useState<SortKey>('score');
   const [filter, setFilter] = useState({ search: '', source: '', category: '' });
+  const [showAnalyze, setShowAnalyze] = useState(false);
+  const [analyzeText, setAnalyzeText] = useState('');
+  const [analyzeSource, setAnalyzeSource] = useState('');
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeResult, setAnalyzeResult] = useState<{ totalWords: number; uniqueWords: number; ingested: number; topWords: Array<{ word: string; count: number }> } | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -142,6 +147,29 @@ export default function WordsPage() {
   }, [filter]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  async function runAnalysis() {
+    if (!analyzeText.trim()) return;
+    setAnalyzing(true);
+    setAnalyzeResult(null);
+    try {
+      const res = await fetch('/api/words/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: analyzeText, source: analyzeSource || 'manual-analysis' }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setAnalyzeResult(data);
+        fetchData(); // refresh word data after analysis
+      } else {
+        alert('Analysis failed: ' + (data.error || 'Unknown error'));
+      }
+    } catch (e) {
+      alert('Analysis error: ' + String(e));
+    }
+    setAnalyzing(false);
+  }
 
   // Derived data
   const categories = useMemo(() => Array.from(new Set(words.map(w => w.category).filter(Boolean))), [words]);
@@ -176,10 +204,66 @@ export default function WordsPage() {
           <h1 className="text-2xl font-bold text-white">💬 Words Trends</h1>
           <p className="text-sm text-slate-500 mt-1">Term frequency analysis, competition mapping &amp; semantic clustering</p>
         </div>
-        <button onClick={fetchData} className="px-4 py-2 bg-dark-600 hover:bg-dark-500 border border-dark-500 rounded-lg text-sm text-slate-300 transition-all">
-          ↻ Refresh
-        </button>
+        <div className="flex gap-2">
+          <button onClick={() => { setShowAnalyze(true); setAnalyzeResult(null); }} className="px-4 py-2 bg-neon-cyan/20 hover:bg-neon-cyan/30 border border-neon-cyan/30 rounded-lg text-sm text-neon-cyan font-medium transition-all">
+            🔍 Analyze Now
+          </button>
+          <button onClick={fetchData} className="px-4 py-2 bg-dark-600 hover:bg-dark-500 border border-dark-500 rounded-lg text-sm text-slate-300 transition-all">
+            ↻ Refresh
+          </button>
+        </div>
       </div>
+
+      {/* Analyze Modal */}
+      {showAnalyze && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setShowAnalyze(false)}>
+          <div className="card w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <h2 className="text-lg font-bold text-white mb-4">🔍 Analyze Text</h2>
+            <p className="text-xs text-slate-500 mb-3">Paste text from gaming discussions, reviews, or articles. Words will be extracted, counted, and added to the database.</p>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Source Label</label>
+                <input className="w-full" placeholder="e.g. reddit-r-gaming, tiktok-comments" value={analyzeSource}
+                  onChange={e => setAnalyzeSource(e.target.value)} />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Text to Analyze</label>
+                <textarea className="w-full h-40 resize-none" placeholder="Paste discussion text, reviews, comments..."
+                  value={analyzeText} onChange={e => setAnalyzeText(e.target.value)} />
+              </div>
+            </div>
+
+            {analyzeResult && (
+              <div className="mt-4 p-3 bg-dark-800 rounded-lg border border-neon-green/20">
+                <p className="text-xs text-neon-green font-medium mb-2">✅ Analysis Complete</p>
+                <div className="grid grid-cols-3 gap-2 text-xs mb-2">
+                  <div><span className="text-slate-500">Total:</span> <span className="text-white">{analyzeResult.totalWords}</span></div>
+                  <div><span className="text-slate-500">Unique:</span> <span className="text-white">{analyzeResult.uniqueWords}</span></div>
+                  <div><span className="text-slate-500">Ingested:</span> <span className="text-white">{analyzeResult.ingested}</span></div>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {analyzeResult.topWords.slice(0, 10).map(tw => (
+                    <span key={tw.word} className="text-xs bg-dark-600 px-2 py-0.5 rounded text-slate-300">
+                      {tw.word} <span className="text-neon-cyan">({tw.count})</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex gap-2 mt-4">
+              <button onClick={runAnalysis} disabled={analyzing || !analyzeText.trim()}
+                className="flex-1 py-2 bg-neon-cyan/20 hover:bg-neon-cyan/30 border border-neon-cyan/30 rounded-lg text-sm text-neon-cyan font-medium disabled:opacity-40 disabled:cursor-not-allowed">
+                {analyzing ? '⏳ Analyzing...' : '🔍 Analyze'}
+              </button>
+              <button onClick={() => setShowAnalyze(false)}
+                className="px-4 py-2 bg-dark-600 hover:bg-dark-500 rounded-lg text-sm text-slate-400">
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Stats row */}
       {stats && (
