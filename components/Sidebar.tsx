@@ -7,7 +7,7 @@ const NAV_ITEMS = [
   { href: '/trends', label: 'Viral Trends', icon: '🔥', active: true },
   { href: '/regions', label: 'Region Analysis', icon: '🗺️', active: false },
   { href: '/calendar', label: 'Calendar Trends', icon: '📅', active: false },
-  { href: '/words', label: 'Words Trends', icon: '💬', active: false },
+  { href: '/words', label: 'Words Trends', icon: '💬', active: true },
   { href: '/forums', label: 'Games Forums', icon: '🎮', active: false },
   { href: '/apps-market', label: 'Apps Market', icon: '📱', active: false },
   { divider: true },
