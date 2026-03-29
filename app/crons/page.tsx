@@ -4,8 +4,22 @@ import { useEffect, useState } from 'react';
 
 interface CronConfig {
   id: number; name: string; description: string; prompt: string; schedule: string;
-  agent: string; source_type: string; enabled: number; last_run: string;
-  created_at: string; updated_at: string;
+  agent: string; source_type: string; target_dashboard: string | null; enabled: number;
+  last_run: string; created_at: string; updated_at: string;
+}
+
+// Dashboard sections from sidebar — used for cron→dashboard relationship labels
+const DASHBOARD_OPTIONS = [
+  { value: 'trends',      label: 'Viral Trends',     icon: '🔥' },
+  { value: 'regions',     label: 'Region Analysis',  icon: '🗺️' },
+  { value: 'calendar',    label: 'Calendar Trends',  icon: '📅' },
+  { value: 'words',       label: 'Words Trends',     icon: '💬' },
+  { value: 'forums',      label: 'Games Forums',     icon: '🎮' },
+  { value: 'apps-market', label: 'Apps Market',      icon: '📱' },
+] as const;
+
+function getDashboard(key: string | null) {
+  return DASHBOARD_OPTIONS.find(d => d.value === key) || null;
 }
 
 interface CronRun {
@@ -152,10 +166,22 @@ export default function CronsPage() {
                   </select>
                 </div>
               </div>
-              <div>
-                <label className="block text-xs text-slate-500 mb-1">Source Type</label>
-                <input className="w-full" placeholder="e.g. reddit, twitter, appstore" value={editing.source_type || ''}
-                  onChange={e => setEditing(p => ({ ...p!, source_type: e.target.value }))} />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Source Type</label>
+                  <input className="w-full" placeholder="e.g. reddit, twitter, appstore" value={editing.source_type || ''}
+                    onChange={e => setEditing(p => ({ ...p!, source_type: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Target Dashboard</label>
+                  <select className="w-full" value={editing.target_dashboard || ''}
+                    onChange={e => setEditing(p => ({ ...p!, target_dashboard: e.target.value || null }))}>
+                    <option value="">None</option>
+                    {DASHBOARD_OPTIONS.map(d => (
+                      <option key={d.value} value={d.value}>{d.icon} {d.label}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
             </div>
             <div className="flex gap-2 mt-5">
@@ -185,6 +211,15 @@ export default function CronsPage() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <h3 className="font-semibold text-white">{cfg.name}</h3>
+                    {cfg.target_dashboard && (() => {
+                      const dash = getDashboard(cfg.target_dashboard);
+                      return dash ? (
+                        <span className="inline-flex items-center gap-1 text-xs bg-neon-cyan/10 border border-neon-cyan/20 px-2 py-0.5 rounded-full text-neon-cyan">
+                          <span>{dash.icon}</span>
+                          <span>{dash.label}</span>
+                        </span>
+                      ) : null;
+                    })()}
                     <span className="text-xs bg-dark-600 px-2 py-0.5 rounded text-slate-400">{cfg.agent}</span>
                     {cfg.source_type && <span className="text-xs bg-dark-600 px-2 py-0.5 rounded text-slate-400">{cfg.source_type}</span>}
                   </div>

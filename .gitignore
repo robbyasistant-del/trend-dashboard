@@ -2,6 +2,8 @@ node_modules/
 .next/
 dist/
 trends.db
+trends.db-shm
+trends.db-wal
 data/inbox/*.json
 !data/inbox/.gitkeep
 *.log

@@ -64,6 +64,7 @@ function initTables(db: Database.Database) {
       schedule TEXT NOT NULL,
       agent TEXT DEFAULT 'default',
       source_type TEXT,
+      target_dashboard TEXT,
       enabled INTEGER DEFAULT 1,
       last_run DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -98,6 +99,13 @@ function initTables(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_trend_snapshots_trend_id ON trend_snapshots(trend_id);
     CREATE INDEX IF NOT EXISTS idx_cron_runs_config_id ON cron_runs(cron_config_id);
   `);
+
+  // Migration: add target_dashboard column if missing (for existing DBs)
+  try {
+    db.prepare("SELECT target_dashboard FROM cron_configs LIMIT 0").run();
+  } catch {
+    db.exec("ALTER TABLE cron_configs ADD COLUMN target_dashboard TEXT");
+  }
 }
 
 // ── Trend helpers ──────────────────────────────────────────────
@@ -147,13 +155,13 @@ export function getCronConfig(id: number) {
   return getDb().prepare('SELECT * FROM cron_configs WHERE id = ?').get(id);
 }
 
-export function createCronConfig(data: { name: string; description?: string; prompt: string; schedule: string; agent?: string; source_type?: string; enabled?: number }) {
+export function createCronConfig(data: { name: string; description?: string; prompt: string; schedule: string; agent?: string; source_type?: string; target_dashboard?: string; enabled?: number }) {
   const db = getDb();
-  const stmt = db.prepare('INSERT INTO cron_configs (name, description, prompt, schedule, agent, source_type, enabled) VALUES (@name, @description, @prompt, @schedule, @agent, @source_type, @enabled)');
-  return stmt.run({ description: null, agent: 'default', source_type: null, enabled: 1, ...data });
+  const stmt = db.prepare('INSERT INTO cron_configs (name, description, prompt, schedule, agent, source_type, target_dashboard, enabled) VALUES (@name, @description, @prompt, @schedule, @agent, @source_type, @target_dashboard, @enabled)');
+  return stmt.run({ description: null, agent: 'default', source_type: null, target_dashboard: null, enabled: 1, ...data });
 }
 
-export function updateCronConfig(id: number, data: Partial<{ name: string; description: string; prompt: string; schedule: string; agent: string; source_type: string; enabled: number }>) {
+export function updateCronConfig(id: number, data: Partial<{ name: string; description: string; prompt: string; schedule: string; agent: string; source_type: string; target_dashboard: string; enabled: number }>) {
   const db = getDb();
   const fields = Object.keys(data).map(k => `${k} = @${k}`).join(', ');
   return db.prepare(`UPDATE cron_configs SET ${fields}, updated_at = CURRENT_TIMESTAMP WHERE id = @id`).run({ ...data, id });
