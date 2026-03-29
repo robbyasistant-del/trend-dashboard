@@ -76,6 +76,7 @@ function initTables(db: Database.Database) {
       cron_config_id INTEGER REFERENCES cron_configs(id) ON DELETE CASCADE,
       status TEXT DEFAULT 'pending',
       output TEXT,
+      output_file TEXT,
       items_processed INTEGER DEFAULT 0,
       error TEXT,
       started_at DATETIME,
@@ -105,6 +106,13 @@ function initTables(db: Database.Database) {
     db.prepare("SELECT target_dashboard FROM cron_configs LIMIT 0").run();
   } catch {
     db.exec("ALTER TABLE cron_configs ADD COLUMN target_dashboard TEXT");
+  }
+
+  // Migration: add output_file column to cron_runs if missing
+  try {
+    db.prepare("SELECT output_file FROM cron_runs LIMIT 0").run();
+  } catch {
+    db.exec("ALTER TABLE cron_runs ADD COLUMN output_file TEXT");
   }
 }
 
@@ -171,10 +179,34 @@ export function deleteCronConfig(id: number) {
   return getDb().prepare('DELETE FROM cron_configs WHERE id = ?').run(id);
 }
 
-export function getCronRuns(configId?: number, limit = 20) {
+export function getCronRuns(opts?: { configId?: number; status?: string; limit?: number }) {
   const db = getDb();
-  if (configId) return db.prepare('SELECT * FROM cron_runs WHERE cron_config_id = ? ORDER BY created_at DESC LIMIT ?').all(configId, limit);
-  return db.prepare('SELECT cr.*, cc.name as cron_name FROM cron_runs cr LEFT JOIN cron_configs cc ON cr.cron_config_id = cc.id ORDER BY cr.created_at DESC LIMIT ?').all(limit);
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+  const limit = opts?.limit || 50;
+
+  if (opts?.configId) { conditions.push('cr.cron_config_id = @configId'); params.configId = opts.configId; }
+  if (opts?.status) { conditions.push('cr.status = @status'); params.status = opts.status; }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  return db.prepare(`
+    SELECT cr.*, cc.name as cron_name, cc.target_dashboard as cron_dashboard
+    FROM cron_runs cr
+    LEFT JOIN cron_configs cc ON cr.cron_config_id = cc.id
+    ${where}
+    ORDER BY cr.started_at DESC, cr.created_at DESC
+    LIMIT @limit
+  `).all({ ...params, limit });
+}
+
+export function getCronRunStats() {
+  const db = getDb();
+  const total = db.prepare('SELECT COUNT(*) as count FROM cron_runs').get() as { count: number };
+  const success = db.prepare("SELECT COUNT(*) as count FROM cron_runs WHERE status = 'success'").get() as { count: number };
+  const errors = db.prepare("SELECT COUNT(*) as count FROM cron_runs WHERE status = 'error'").get() as { count: number };
+  const pending = db.prepare("SELECT COUNT(*) as count FROM cron_runs WHERE status = 'pending' OR status = 'running'").get() as { count: number };
+  const totalItems = db.prepare('SELECT COALESCE(SUM(items_processed), 0) as total FROM cron_runs').get() as { total: number };
+  return { total: total.count, success: success.count, errors: errors.count, pending: pending.count, totalItems: totalItems.total };
 }
 
 // ── Tag helpers ──────────────────────────────────────────────

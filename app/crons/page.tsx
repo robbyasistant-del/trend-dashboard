@@ -23,9 +23,14 @@ function getDashboard(key: string | null) {
 }
 
 interface CronRun {
-  id: number; cron_config_id: number; cron_name?: string; status: string;
-  output: string; items_processed: number; error: string;
-  started_at: string; completed_at: string;
+  id: number; cron_config_id: number; cron_name?: string; cron_dashboard?: string | null;
+  status: string; output: string; output_file: string | null;
+  items_processed: number; error: string;
+  started_at: string; completed_at: string; created_at: string;
+}
+
+interface RunStats {
+  total: number; success: number; errors: number; pending: number; totalItems: number;
 }
 
 const SCHEDULE_PRESETS = [
@@ -39,6 +44,52 @@ const SCHEDULE_PRESETS = [
 
 const AGENT_OPTIONS = ['default', 'claude-sonnet', 'gpt-4o', 'gemini-flash', 'kimi-k2'];
 
+// ── Helpers ────────────────────────────────────────────────
+
+function relativeTime(dateStr: string | null): string {
+  if (!dateStr) return '—';
+  const now = Date.now();
+  const then = new Date(dateStr).getTime();
+  const diff = now - then;
+  if (diff < 0) return 'just now';
+  const secs = Math.floor(diff / 1000);
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(dateStr).toLocaleDateString();
+}
+
+function duration(start: string | null, end: string | null): string {
+  if (!start || !end) return '—';
+  const ms = new Date(end).getTime() - new Date(start).getTime();
+  if (ms < 0) return '—';
+  if (ms < 1000) return `${ms}ms`;
+  const secs = Math.floor(ms / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  const remSecs = secs % 60;
+  if (mins < 60) return `${mins}m ${remSecs}s`;
+  const hrs = Math.floor(mins / 60);
+  return `${hrs}h ${mins % 60}m`;
+}
+
+const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; dot: string }> = {
+  success: { label: 'Success', color: 'text-emerald-400', bg: 'bg-emerald-500/10 border-emerald-500/20', dot: 'bg-emerald-400' },
+  error:   { label: 'Error',   color: 'text-red-400',     bg: 'bg-red-500/10 border-red-500/20',     dot: 'bg-red-400' },
+  pending: { label: 'Pending', color: 'text-amber-400',   bg: 'bg-amber-500/10 border-amber-500/20', dot: 'bg-amber-400 animate-pulse' },
+  running: { label: 'Running', color: 'text-blue-400',    bg: 'bg-blue-500/10 border-blue-500/20',   dot: 'bg-blue-400 animate-pulse' },
+};
+
+function getStatusConfig(status: string) {
+  return STATUS_CONFIG[status] || STATUS_CONFIG.pending;
+}
+
+// ── Components ─────────────────────────────────────────────
+
 function EmptyState() {
   return (
     <div className="text-center py-16">
@@ -49,21 +100,50 @@ function EmptyState() {
   );
 }
 
+function StatCard({ label, value, icon, color }: { label: string; value: string | number; icon: string; color?: string }) {
+  return (
+    <div className="bg-dark-800 border border-dark-500 rounded-lg px-4 py-3 flex items-center gap-3 min-w-0">
+      <span className="text-lg">{icon}</span>
+      <div className="min-w-0">
+        <div className={`text-lg font-semibold ${color || 'text-white'}`}>{value}</div>
+        <div className="text-[10px] text-slate-500 uppercase tracking-wider">{label}</div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main Page ──────────────────────────────────────────────
+
 export default function CronsPage() {
   const [configs, setConfigs] = useState<CronConfig[]>([]);
   const [runs, setRuns] = useState<CronRun[]>([]);
+  const [runStats, setRunStats] = useState<RunStats | null>(null);
   const [editing, setEditing] = useState<Partial<CronConfig> | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'configs' | 'runs'>('configs');
+
+  // Run History filters & state
+  const [filterCron, setFilterCron] = useState<string>('all');
+  const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [expandedRun, setExpandedRun] = useState<number | null>(null);
 
   useEffect(() => { fetchData(); }, []);
 
   async function fetchData() {
     setLoading(true);
     try {
-      const [cfgRes, runsRes] = await Promise.all([fetch('/api/crons'), fetch('/api/crons/runs')]);
+      const [cfgRes, runsRes] = await Promise.all([
+        fetch('/api/crons'),
+        fetch('/api/crons/runs?stats=true&limit=100'),
+      ]);
       setConfigs(await cfgRes.json());
-      setRuns(await runsRes.json());
+      const runsData = await runsRes.json();
+      if (runsData.runs) {
+        setRuns(runsData.runs);
+        setRunStats(runsData.stats);
+      } else {
+        setRuns(runsData);
+      }
     } catch (e) { console.error(e); }
     setLoading(false);
   }
@@ -100,6 +180,17 @@ export default function CronsPage() {
     fetchData();
   }
 
+  // Filter runs client-side
+  const filteredRuns = runs.filter(r => {
+    if (filterCron !== 'all' && String(r.cron_config_id) !== filterCron) return false;
+    if (filterStatus !== 'all' && r.status !== filterStatus) return false;
+    return true;
+  });
+
+  const successRate = runStats && runStats.total > 0
+    ? Math.round((runStats.success / runStats.total) * 100)
+    : 0;
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
@@ -123,7 +214,7 @@ export default function CronsPage() {
         {(['configs', 'runs'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${tab === t ? 'bg-dark-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}>
-            {t === 'configs' ? 'Configurations' : 'Run History'}
+            {t === 'configs' ? 'Configurations' : `Run History${runStats ? ` (${runStats.total})` : ''}`}
           </button>
         ))}
       </div>
@@ -202,6 +293,9 @@ export default function CronsPage() {
       {loading ? (
         <div className="text-center py-12 text-slate-500">Loading...</div>
       ) : tab === 'configs' ? (
+        /* ═══════════════════════════════════════════════════════
+           CONFIGURATIONS TAB
+           ═══════════════════════════════════════════════════════ */
         configs.length === 0 ? <EmptyState /> : (
           <div className="space-y-3">
             {configs.map(cfg => (
@@ -238,24 +332,187 @@ export default function CronsPage() {
           </div>
         )
       ) : (
-        runs.length === 0 ? (
-          <div className="text-center py-12 text-slate-500">No runs yet</div>
-        ) : (
-          <div className="space-y-2">
-            {runs.map(run => (
-              <div key={run.id} className="card flex items-center gap-4 py-3">
-                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                  run.status === 'success' ? 'bg-neon-green' : run.status === 'error' ? 'bg-red-500' : 'bg-neon-amber pulse-neon'
-                }`} />
-                <div className="flex-1 min-w-0">
-                  <span className="text-sm text-white">{run.cron_name || `Cron #${run.cron_config_id}`}</span>
-                  <span className="text-xs text-slate-500 ml-2">{run.items_processed} items</span>
-                </div>
-                <span className="text-xs text-slate-600">{run.completed_at ? new Date(run.completed_at).toLocaleString() : 'Running...'}</span>
-              </div>
-            ))}
+        /* ═══════════════════════════════════════════════════════
+           RUN HISTORY TAB (enhanced)
+           ═══════════════════════════════════════════════════════ */
+        <div className="space-y-4">
+          {/* Stats bar */}
+          {runStats && runStats.total > 0 && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <StatCard icon="📊" label="Total Runs" value={runStats.total} />
+              <StatCard icon="✅" label="Success Rate" value={`${successRate}%`} color={successRate >= 80 ? 'text-emerald-400' : successRate >= 50 ? 'text-amber-400' : 'text-red-400'} />
+              <StatCard icon="❌" label="Errors" value={runStats.errors} color={runStats.errors > 0 ? 'text-red-400' : 'text-slate-400'} />
+              <StatCard icon="📦" label="Items Processed" value={runStats.totalItems.toLocaleString()} />
+            </div>
+          )}
+
+          {/* Filters */}
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-slate-500">Cron:</label>
+              <select className="text-xs bg-dark-800 border border-dark-500 rounded-md px-2 py-1.5 text-slate-300"
+                value={filterCron} onChange={e => setFilterCron(e.target.value)}>
+                <option value="all">All crons</option>
+                {configs.map(c => <option key={c.id} value={String(c.id)}>{c.name}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-slate-500">Status:</label>
+              <select className="text-xs bg-dark-800 border border-dark-500 rounded-md px-2 py-1.5 text-slate-300"
+                value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
+                <option value="all">All</option>
+                <option value="success">✅ Success</option>
+                <option value="error">❌ Error</option>
+                <option value="pending">⏳ Pending</option>
+                <option value="running">🔄 Running</option>
+              </select>
+            </div>
+            <span className="text-xs text-slate-600 ml-auto">
+              {filteredRuns.length} run{filteredRuns.length !== 1 ? 's' : ''}
+              {(filterCron !== 'all' || filterStatus !== 'all') ? ' (filtered)' : ''}
+            </span>
           </div>
-        )
+
+          {/* Runs list */}
+          {filteredRuns.length === 0 ? (
+            <div className="text-center py-12">
+              <p className="text-3xl mb-3">📭</p>
+              <p className="text-slate-400">
+                {runs.length === 0 ? 'No runs yet' : 'No runs match your filters'}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {filteredRuns.map(run => {
+                const sc = getStatusConfig(run.status);
+                const isExpanded = expandedRun === run.id;
+                const dash = getDashboard(run.cron_dashboard || null);
+
+                return (
+                  <div key={run.id} className="card p-0 overflow-hidden">
+                    {/* Main row — clickable to expand */}
+                    <div
+                      className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-dark-700/50 transition-colors"
+                      onClick={() => setExpandedRun(isExpanded ? null : run.id)}
+                    >
+                      {/* Status dot */}
+                      <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${sc.dot}`} />
+
+                      {/* Cron name + dashboard badge */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-white truncate">
+                            {run.cron_name || `Cron #${run.cron_config_id}`}
+                          </span>
+                          {dash && (
+                            <span className="inline-flex items-center gap-0.5 text-[10px] bg-neon-cyan/10 border border-neon-cyan/20 px-1.5 py-0.5 rounded-full text-neon-cyan flex-shrink-0">
+                              <span>{dash.icon}</span>
+                              <span className="hidden sm:inline">{dash.label}</span>
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3 text-xs text-slate-500 mt-0.5">
+                          <span title={run.started_at ? new Date(run.started_at).toLocaleString() : ''}>
+                            {relativeTime(run.started_at || run.created_at)}
+                          </span>
+                          <span>⏱ {duration(run.started_at, run.completed_at)}</span>
+                          {run.items_processed > 0 && (
+                            <span>📦 {run.items_processed} item{run.items_processed !== 1 ? 's' : ''}</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Status badge */}
+                      <span className={`text-xs border px-2 py-0.5 rounded-full flex-shrink-0 ${sc.bg} ${sc.color}`}>
+                        {sc.label}
+                      </span>
+
+                      {/* Output file link */}
+                      {run.output_file && (
+                        <a
+                          href={run.output_file}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-neon-cyan hover:underline flex-shrink-0"
+                          onClick={e => e.stopPropagation()}
+                          title="Open output file"
+                        >
+                          📄
+                        </a>
+                      )}
+
+                      {/* Expand chevron */}
+                      <span className={`text-slate-600 text-xs transition-transform ${isExpanded ? 'rotate-180' : ''}`}>
+                        ▼
+                      </span>
+                    </div>
+
+                    {/* Expanded details */}
+                    {isExpanded && (
+                      <div className="border-t border-dark-500 px-4 py-3 bg-dark-900/50 space-y-3">
+                        {/* Metadata grid */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                          <div>
+                            <span className="text-slate-600 block">Run ID</span>
+                            <span className="text-slate-300 font-mono">#{run.id}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-600 block">Started</span>
+                            <span className="text-slate-300">{run.started_at ? new Date(run.started_at).toLocaleString() : '—'}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-600 block">Completed</span>
+                            <span className="text-slate-300">{run.completed_at ? new Date(run.completed_at).toLocaleString() : '—'}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-600 block">Duration</span>
+                            <span className="text-slate-300">{duration(run.started_at, run.completed_at)}</span>
+                          </div>
+                        </div>
+
+                        {/* Output file */}
+                        {run.output_file && (
+                          <div>
+                            <span className="text-xs text-slate-600 block mb-1">📄 Output File</span>
+                            <a href={run.output_file} target="_blank" rel="noopener noreferrer"
+                              className="text-xs text-neon-cyan hover:underline break-all font-mono bg-dark-800 px-2 py-1 rounded inline-block">
+                              {run.output_file}
+                            </a>
+                          </div>
+                        )}
+
+                        {/* Output */}
+                        {run.output && (
+                          <div>
+                            <span className="text-xs text-slate-600 block mb-1">📝 Output</span>
+                            <pre className="text-xs text-slate-300 bg-dark-800 rounded-lg p-3 overflow-x-auto max-h-64 whitespace-pre-wrap font-mono border border-dark-500">
+                              {run.output}
+                            </pre>
+                          </div>
+                        )}
+
+                        {/* Error */}
+                        {run.error && (
+                          <div>
+                            <span className="text-xs text-red-400 block mb-1">⚠️ Error</span>
+                            <pre className="text-xs text-red-300 bg-red-500/5 border border-red-500/20 rounded-lg p-3 overflow-x-auto max-h-48 whitespace-pre-wrap font-mono">
+                              {run.error}
+                            </pre>
+                          </div>
+                        )}
+
+                        {/* No output/error */}
+                        {!run.output && !run.error && (
+                          <p className="text-xs text-slate-600 italic">No output or error details recorded for this run.</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
