@@ -12,6 +12,10 @@ const NAV_ITEMS = [
   { href: '/forums', label: 'Games Forums', icon: '🎮', active: true },
   { href: '/apps-market', label: 'Apps Market', icon: '📱', active: true },
   { divider: true },
+  { href: '/correlations', label: 'Cross-Platform', icon: '🔗', active: true },
+  { href: '/velocity', label: 'Velocity Alerts', icon: '⚡', active: true },
+  { href: '/competitors', label: 'Competitor Watch', icon: '🏢', active: true },
+  { divider: true },
   { href: '/crons', label: 'Crons Settings', icon: '⚙️', active: true },
 ] as const;
 

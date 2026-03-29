@@ -552,6 +552,42 @@ function initTables(db: Database.Database) {
       enabled: 1,
     });
   }
+
+  // ── Auto-seed Velocity Scanner cron config ──────────────────
+  const velocityCronCount = db.prepare("SELECT COUNT(*) as count FROM cron_configs WHERE name = 'Velocity Scanner'").get() as { count: number };
+  if (velocityCronCount.count === 0) {
+    db.prepare(`
+      INSERT OR IGNORE INTO cron_configs (name, description, prompt, schedule, agent, source_type, target_dashboard, enabled)
+      VALUES (@name, @description, @prompt, @schedule, @agent, @source_type, @target_dashboard, @enabled)
+    `).run({
+      name: 'Velocity Scanner',
+      description: 'Scan trends, apps, forums, and words for velocity changes and acceleration. Creates alerts for fast-moving entities.',
+      prompt: 'Run velocity scan across all tracked entities. Compute velocity (rate of change) and acceleration (rate of velocity change) for trends (viral_score), apps (downloads), forum posts (score), and words (frequency). Create velocity_alerts for entities exceeding thresholds: critical (velocity>=30 or accel>=100%), high (>=20 or >=50%), medium (>=10 or >=25%). Skip entities already alerted in past 24h.',
+      schedule: '0 */2 * * *',
+      agent: 'default',
+      source_type: 'scanner',
+      target_dashboard: 'velocity',
+      enabled: 1,
+    });
+  }
+
+  // ── Auto-seed Competitor Tracker cron config ────────────────
+  const competitorCronCount = db.prepare("SELECT COUNT(*) as count FROM cron_configs WHERE name = 'Competitor Tracker'").get() as { count: number };
+  if (competitorCronCount.count === 0) {
+    db.prepare(`
+      INSERT OR IGNORE INTO cron_configs (name, description, prompt, schedule, agent, source_type, target_dashboard, enabled)
+      VALUES (@name, @description, @prompt, @schedule, @agent, @source_type, @target_dashboard, @enabled)
+    `).run({
+      name: 'Competitor Tracker',
+      description: 'Daily snapshot of competitor metrics: app count, total downloads, average rating, and estimated market share.',
+      prompt: 'For each enabled competitor, count their apps in app_entries (match by developer field), sum downloads, compute average rating, and estimate market share as percentage of total downloads. Insert a competitor_snapshot for each. Also auto-detect new competitors from app_entries developers with 3+ apps that are not yet tracked.',
+      schedule: '0 6 * * *',
+      agent: 'default',
+      source_type: 'tracker',
+      target_dashboard: 'competitors',
+      enabled: 1,
+    });
+  }
 }
 
 // ── Trend helpers ──────────────────────────────────────────────
@@ -2755,4 +2791,79 @@ export function getUpcomingCalendarEvents(days = 7) {
   const now = new Date().toISOString().slice(0, 10);
   const future = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
   return db.prepare('SELECT * FROM calendar_events WHERE start_date >= @now AND start_date <= @future ORDER BY start_date ASC LIMIT 10').all({ now, future });
+}
+
+// ── Sprint 6: Auto-detect Competitors from App Developers ────
+
+export function autoDetectCompetitors(): { detected: number; skipped: number } {
+  const db = getDb();
+  let detected = 0;
+  let skipped = 0;
+
+  // Find developers with 3+ apps that aren't already tracked
+  const developers = db.prepare(`
+    SELECT developer, COUNT(*) as app_count, SUM(downloads) as total_downloads, AVG(rating) as avg_rating
+    FROM app_entries
+    WHERE developer IS NOT NULL AND developer != ''
+    GROUP BY developer
+    HAVING COUNT(*) >= 3
+    ORDER BY total_downloads DESC
+    LIMIT 50
+  `).all() as Array<{ developer: string; app_count: number; total_downloads: number; avg_rating: number }>;
+
+  const insertCompetitor = db.prepare(`
+    INSERT OR IGNORE INTO competitors (name, type, description, enabled)
+    VALUES (@name, @type, @description, @enabled)
+  `);
+
+  for (const dev of developers) {
+    // Check if already tracked
+    const existing = db.prepare('SELECT id FROM competitors WHERE name = ?').get(dev.developer);
+    if (existing) {
+      skipped++;
+      continue;
+    }
+
+    insertCompetitor.run({
+      name: dev.developer,
+      type: 'developer',
+      description: `Auto-detected: ${dev.app_count} apps, ${(dev.total_downloads || 0).toLocaleString()} downloads`,
+      enabled: 1,
+    });
+    detected++;
+  }
+
+  return { detected, skipped };
+}
+
+// ── Sprint 6: Snapshot Competitors (for cron) ─────────────────
+
+export function snapshotCompetitors(): { snapshotsCreated: number } {
+  const db = getDb();
+  let snapshotsCreated = 0;
+
+  const competitors = db.prepare('SELECT * FROM competitors WHERE enabled = 1').all() as Array<{ id: number; name: string }>;
+  const totalDownloads = (db.prepare('SELECT COALESCE(SUM(downloads), 0) as total FROM app_entries').get() as { total: number }).total || 1;
+
+  for (const comp of competitors) {
+    const stats = db.prepare(`
+      SELECT COUNT(*) as app_count, COALESCE(SUM(downloads), 0) as total_dl, AVG(rating) as avg_rating
+      FROM app_entries
+      WHERE developer = ?
+    `).get(comp.name) as { app_count: number; total_dl: number; avg_rating: number } | undefined;
+
+    if (stats) {
+      const marketShare = totalDownloads > 0 ? (stats.total_dl / totalDownloads) * 100 : 0;
+      insertCompetitorSnapshot({
+        competitor_id: comp.id,
+        app_count: stats.app_count,
+        total_downloads: stats.total_dl,
+        avg_rating: Math.round((stats.avg_rating || 0) * 100) / 100,
+        market_share: Math.round(marketShare * 100) / 100,
+      });
+      snapshotsCreated++;
+    }
+  }
+
+  return { snapshotsCreated };
 }

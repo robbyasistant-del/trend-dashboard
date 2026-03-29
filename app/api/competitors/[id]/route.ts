@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCompetitorDetail, getCompetitorHistory, updateCompetitor, deleteCompetitor } from '@/lib/db';
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const id = parseInt(params.id);
+    const { id: rawId } = await params;
+    const id = parseInt(rawId);
     const history = req.nextUrl.searchParams.get('history') === 'true';
     if (history) {
       const data = getCompetitorHistory(id);
@@ -19,9 +20,10 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   }
 }
 
-export async function PUT(req: NextRequest, { params }: { params: { id: string } }) {
+export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const id = parseInt(params.id);
+    const { id: rawId } = await params;
+    const id = parseInt(rawId);
     const body = await req.json();
     updateCompetitor(id, body);
     return NextResponse.json({ success: true });
@@ -30,9 +32,10 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
   }
 }
 
-export async function DELETE(_req: NextRequest, { params }: { params: { id: string } }) {
+export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const id = parseInt(params.id);
+    const { id: rawId } = await params;
+    const id = parseInt(rawId);
     deleteCompetitor(id);
     return NextResponse.json({ success: true });
   } catch (err) {
