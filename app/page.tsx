@@ -46,6 +46,9 @@ const NAV_CARDS = [
   { href: '/apps-market', label: 'Apps Market', icon: '📱', desc: 'App rankings & market moves', color: 'from-purple-500/20 to-violet-500/20', border: 'border-purple-500/30' },
   { href: '/regions', label: 'Region Analysis', icon: '🗺️', desc: 'Geographic trend distribution', color: 'from-amber-500/20 to-yellow-500/20', border: 'border-amber-500/30' },
   { href: '/calendar', label: 'Calendar Trends', icon: '📅', desc: 'Seasonal patterns & events', color: 'from-pink-500/20 to-rose-500/20', border: 'border-pink-500/30' },
+  { href: '/correlations', label: 'Cross-Platform', icon: '🔗', desc: 'Cross-platform correlation engine', color: 'from-teal-500/20 to-cyan-500/20', border: 'border-teal-500/30' },
+  { href: '/velocity', label: 'Velocity Alerts', icon: '⚡', desc: 'Early detection of fast movers', color: 'from-yellow-500/20 to-amber-500/20', border: 'border-yellow-500/30' },
+  { href: '/competitors', label: 'Competitor Watch', icon: '🏢', desc: 'Track competing studios & devs', color: 'from-indigo-500/20 to-blue-500/20', border: 'border-indigo-500/30' },
   { href: '/crons', label: 'Cron Settings', icon: '⚙️', desc: 'Automated data collection', color: 'from-slate-500/20 to-gray-500/20', border: 'border-slate-500/30' },
 ];
 

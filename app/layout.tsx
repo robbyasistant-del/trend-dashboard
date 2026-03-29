@@ -12,7 +12,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className="dark">
       <body className="antialiased">
         <Sidebar />
-        <main className="ml-64 min-h-screen p-6">
+        <main className="lg:ml-64 min-h-screen p-4 pt-16 lg:pt-6 lg:p-6">
           {children}
         </main>
       </body>

@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
@@ -21,9 +22,10 @@ const NAV_ITEMS = [
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const [mobileOpen, setMobileOpen] = useState(false);
 
-  return (
-    <aside className="fixed left-0 top-0 bottom-0 w-64 bg-dark-800 border-r border-dark-500 flex flex-col z-50">
+  const navContent = (
+    <>
       {/* Brand */}
       <div className="p-5 border-b border-dark-500">
         <div className="flex items-center gap-3">
@@ -34,6 +36,14 @@ export default function Sidebar() {
             <h1 className="text-sm font-bold text-white tracking-tight">Trends Dashboard</h1>
             <p className="text-[10px] text-slate-500 uppercase tracking-widest">Casual Games Intel</p>
           </div>
+          {/* Mobile close button */}
+          <button
+            onClick={() => setMobileOpen(false)}
+            className="ml-auto lg:hidden text-slate-400 hover:text-white text-xl"
+            aria-label="Close menu"
+          >
+            ✕
+          </button>
         </div>
       </div>
 
@@ -57,7 +67,10 @@ export default function Sidebar() {
                     ? 'text-slate-400 hover:text-white hover:bg-dark-700'
                     : 'text-slate-600 cursor-not-allowed'
               }`}
-              onClick={e => { if (!isEnabled) e.preventDefault(); }}
+              onClick={e => {
+                if (!isEnabled) e.preventDefault();
+                setMobileOpen(false);
+              }}
             >
               <span className="text-base">{item.icon}</span>
               <span className="flex-1">{item.label}</span>
@@ -77,6 +90,39 @@ export default function Sidebar() {
           Powered by OpenClaw Agents
         </div>
       </div>
-    </aside>
+    </>
+  );
+
+  return (
+    <>
+      {/* Mobile hamburger button */}
+      <button
+        onClick={() => setMobileOpen(true)}
+        className="fixed top-4 left-4 z-50 lg:hidden p-2 bg-dark-800 border border-dark-500 rounded-lg text-slate-300 hover:text-white transition-all"
+        aria-label="Open menu"
+      >
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+      </button>
+
+      {/* Desktop sidebar - always visible on lg+ */}
+      <aside className="hidden lg:flex fixed left-0 top-0 bottom-0 w-64 bg-dark-800 border-r border-dark-500 flex-col z-50">
+        {navContent}
+      </aside>
+
+      {/* Mobile sidebar - overlay */}
+      {mobileOpen && (
+        <>
+          <div
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 lg:hidden"
+            onClick={() => setMobileOpen(false)}
+          />
+          <aside className="fixed left-0 top-0 bottom-0 w-64 bg-dark-800 border-r border-dark-500 flex flex-col z-50 lg:hidden">
+            {navContent}
+          </aside>
+        </>
+      )}
+    </>
   );
 }
