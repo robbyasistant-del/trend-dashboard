@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { getDb, crossReferenceForumWords, crossReferenceAppWords, upsertAppEntry, insertAppRanking, insertAppSnapshot } from './db';
+import { getDb, crossReferenceForumWords, crossReferenceAppWords, upsertAppEntry, insertAppRanking, insertAppSnapshot, upsertGeoTrendLink } from './db';
 
 const INBOX_DIR = path.join(process.cwd(), 'data', 'inbox');
 
@@ -165,6 +165,18 @@ export function ingestPayload(payload: InboxPayload) {
 
         // Create initial snapshot
         insertSnapshot.run(result.lastInsertRowid, t.viral_score || 0, t.velocity || 0, t.mentions || 0);
+
+        // Populate geo_trend_links for region-tagged trends
+        const trendRegion = t.region || 'global';
+        if (trendRegion && trendRegion !== 'global' && result.lastInsertRowid) {
+          try {
+            upsertGeoTrendLink({
+              trend_id: Number(result.lastInsertRowid),
+              region_code: trendRegion,
+              relevance_score: Math.min(1.0, (t.viral_score || 50) / 100),
+            });
+          } catch { /* non-critical — geo link insert may fail on dupes */ }
+        }
 
         // Update tags
         if (t.tags) {

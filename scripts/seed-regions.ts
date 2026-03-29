@@ -156,7 +156,7 @@ function seedRegions() {
     }
 
     // Link existing trends to regions via geo_trend_links
-    const trends = db.prepare('SELECT id, region FROM trends WHERE region IS NOT NULL AND region != "global" LIMIT 500').all() as Array<{ id: number; region: string }>;
+    const trends = db.prepare("SELECT id, region FROM trends WHERE region IS NOT NULL AND region != 'global' LIMIT 500").all() as Array<{ id: number; region: string }>;
 
     const insertLink = db.prepare(`
       INSERT OR IGNORE INTO geo_trend_links (trend_id, region_code, relevance_score)
@@ -179,6 +179,47 @@ function seedRegions() {
   transaction();
 }
 
+function seedCronConfigs() {
+  console.log('⚙️  Seeding region cron configs...');
+
+  // Ensure cron_configs table exists (it should from main db init)
+  const existing = db.prepare("SELECT COUNT(*) as count FROM cron_configs WHERE target_dashboard = 'regions'").get() as { count: number };
+  if (existing.count >= 2) {
+    console.log('  ⏭️  Region cron configs already exist, skipping');
+    return;
+  }
+
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO cron_configs (name, description, prompt, schedule, agent, source_type, target_dashboard, enabled)
+    VALUES (@name, @description, @prompt, @schedule, @agent, @source_type, @target_dashboard, @enabled)
+  `);
+
+  insert.run({
+    name: 'Region Metrics Aggregator',
+    description: 'Rebuild region_metrics by aggregating trends, apps, forums, and words data grouped by region. Runs daily to keep the geo dashboard up to date.',
+    prompt: 'Aggregate all trend, app, forum, and word data by region. For each ISO 3166-1 alpha-2 region code found in the trends table, compute: trend_count, avg_viral_score, app_count, forum_activity, word_velocity, total_mentions. Insert results into region_metrics with period=daily. Also create a region_snapshot for historical tracking.',
+    schedule: '0 3 * * *',
+    agent: 'default',
+    source_type: 'aggregator',
+    target_dashboard: 'regions',
+    enabled: 1,
+  });
+
+  insert.run({
+    name: 'Regional Viral Detector',
+    description: 'Scan for trends with unusually high viral scores in specific regions. Detect regional spikes and cross-border spread patterns.',
+    prompt: 'Analyze trends table for regional viral spikes. For each region, compare current avg_viral_score against 7-day moving average from region_snapshots. Flag regions where current score exceeds average by >20%. Create geo_trend_links for high-relevance trend-region pairs. Report detected regional virals with region code, trend titles, and spike magnitude.',
+    schedule: '0 */6 * * *',
+    agent: 'default',
+    source_type: 'detector',
+    target_dashboard: 'regions',
+    enabled: 1,
+  });
+
+  console.log('  ✅ Inserted 2 region cron configs');
+}
+
 seedRegions();
+seedCronConfigs();
 db.close();
 console.log('🌍 Region seed complete!');

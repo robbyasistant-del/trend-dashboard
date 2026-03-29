@@ -35,8 +35,11 @@ export interface MapDataPoint {
 interface RegionMapProps {
   data: MapDataPoint[];
   selectedRegion: string | null;
+  zoom: number;
+  center: [number, number];
   onRegionClick: (code: string, name: string) => void;
   onRegionHover: (code: string | null, name: string | null) => void;
+  onMoveEnd: (position: { coordinates: [number, number]; zoom: number }) => void;
 }
 
 function heatColor(normalized: number): string {
@@ -48,7 +51,7 @@ function heatColor(normalized: number): string {
   return '#06ffa5';
 }
 
-function RegionMap({ data, selectedRegion, onRegionClick, onRegionHover }: RegionMapProps) {
+function RegionMap({ data, selectedRegion, zoom, center, onRegionClick, onRegionHover, onMoveEnd }: RegionMapProps) {
   const dataMap = new Map<string, MapDataPoint>();
   for (const d of data) {
     dataMap.set(d.code, d);
@@ -61,7 +64,7 @@ function RegionMap({ data, selectedRegion, onRegionClick, onRegionHover }: Regio
       height={400}
       style={{ width: '100%', height: 'auto' }}
     >
-      <ZoomableGroup center={[0, 0]} zoom={1} minZoom={1} maxZoom={8}>
+      <ZoomableGroup center={center} zoom={zoom} minZoom={1} maxZoom={8} onMoveEnd={onMoveEnd}>
         <Geographies geography={GEO_URL}>
           {({ geographies }) =>
             geographies.map((geo) => {

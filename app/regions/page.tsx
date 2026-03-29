@@ -1,14 +1,40 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
-import dynamic from 'next/dynamic';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Legend } from 'recharts';
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
+  ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, Cell, Legend,
+} from 'recharts';
+import { ComposableMap, Geographies, Geography, ZoomableGroup } from 'react-simple-maps';
 
-import type { MapDataPoint } from '@/components/regions/RegionMap';
+// ── Types ──────────────────────────────────────────────────────
 
-const RegionMap = dynamic(() => import('@/components/regions/RegionMap'), { ssr: false, loading: () => <div className="h-[400px] bg-dark-800 rounded-xl animate-pulse flex items-center justify-center text-slate-600">Loading map…</div> });
+interface RegionMetric {
+  id: number;
+  code: string;
+  name: string;
+  trend_count: number;
+  avg_viral_score: number;
+  app_count: number;
+  forum_activity: number;
+  word_velocity: number;
+  total_mentions: number;
+  top_category: string;
+  period: string;
+}
 
-// ── Types ──────────────────────────────────────────────
+interface MapDataPoint {
+  code: string;
+  name: string;
+  value: number;
+  normalized: number;
+  trend_count: number;
+  avg_viral_score: number;
+  app_count: number;
+  forum_activity: number;
+  word_velocity: number;
+  total_mentions: number;
+}
 
 interface RegionStats {
   totalRegions: number;
@@ -19,421 +45,708 @@ interface RegionStats {
   topByForum: { code: string; name: string; forum_activity: number } | null;
 }
 
-interface RegionMetric {
-  id: number; code: string; name: string;
-  trend_count: number; avg_viral_score: number; app_count: number;
-  forum_activity: number; word_velocity: number; total_mentions: number;
-  top_category: string; period: string;
-}
-
-interface TrendItem {
-  id: number; title: string; viral_score: number; category: string;
-  region: string; velocity: number; lifecycle: string;
-}
-
 interface RegionDetail {
   metrics: RegionMetric | null;
-  snapshots: Array<{ region_code: string; trend_count: number; avg_viral_score: number; app_count: number; forum_activity: number; word_velocity: number; recorded_at: string }>;
-  trends: TrendItem[];
-  words: Array<{ id: number; word: string; score: number; frequency: number; growth: number }>;
-  forumPosts: Array<{ id: number; title: string; score: number; source: string; comments: number }>;
-  apps: Array<{ id: number; name: string; store: string; rating: number; downloads: number; category: string }>;
+  snapshots: Array<Record<string, unknown>>;
+  trends: Array<{ id: number; title: string; viral_score: number; category: string; relevance_score?: number }>;
+  words: Array<Record<string, unknown>>;
+  forumPosts: Array<Record<string, unknown>>;
+  apps: Array<Record<string, unknown>>;
+}
+
+// ── Constants ──────────────────────────────────────────────────
+
+const GEO_URL = 'https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json';
+
+const FLAGS: Record<string, string> = {
+  US: '🇺🇸', GB: '🇬🇧', ES: '🇪🇸', DE: '🇩🇪', FR: '🇫🇷', JP: '🇯🇵', KR: '🇰🇷',
+  BR: '🇧🇷', MX: '🇲🇽', IN: '🇮🇳', AU: '🇦🇺', CA: '🇨🇦', IT: '🇮🇹', SE: '🇸🇪',
+  NL: '🇳🇱', CN: '🇨🇳', RU: '🇷🇺', TR: '🇹🇷', ID: '🇮🇩', TH: '🇹🇭', VN: '🇻🇳',
+  PH: '🇵🇭', PL: '🇵🇱', SG: '🇸🇬', SA: '🇸🇦', AE: '🇦🇪', AR: '🇦🇷', CO: '🇨🇴',
+  ZA: '🇿🇦', NG: '🇳🇬', EG: '🇪🇬', MY: '🇲🇾', TW: '🇹🇼', FI: '🇫🇮', NO: '🇳🇴',
+  DK: '🇩🇰', IL: '🇮🇱', PT: '🇵🇹', AT: '🇦🇹', CH: '🇨🇭', IE: '🇮🇪', NZ: '🇳🇿',
+  CZ: '🇨🇿', RO: '🇷🇴', UA: '🇺🇦', PK: '🇵🇰', CL: '🇨🇱', PE: '🇵🇪', HK: '🇭🇰',
+  BE: '🇧🇪',
+};
+
+// ISO 3166-1 alpha-2 to numeric code mapping for world-atlas TopoJSON
+const ALPHA2_TO_NUMERIC: Record<string, string> = {
+  AF:'004',AL:'008',DZ:'012',AS:'016',AD:'020',AO:'024',AG:'028',AR:'032',AM:'051',AU:'036',
+  AT:'040',AZ:'031',BS:'044',BH:'048',BD:'050',BB:'052',BY:'112',BE:'056',BZ:'084',BJ:'204',
+  BT:'064',BO:'068',BA:'070',BW:'072',BR:'076',BN:'096',BG:'100',BF:'854',BI:'108',KH:'116',
+  CM:'120',CA:'124',CV:'132',CF:'140',TD:'148',CL:'152',CN:'156',CO:'170',KM:'174',CD:'180',
+  CG:'178',CR:'188',CI:'384',HR:'191',CU:'192',CY:'196',CZ:'203',DK:'208',DJ:'262',DM:'212',
+  DO:'214',EC:'218',EG:'818',SV:'222',GQ:'226',ER:'232',EE:'233',ET:'231',FJ:'242',FI:'246',
+  FR:'250',GA:'266',GM:'270',GE:'268',DE:'276',GH:'288',GR:'300',GD:'308',GT:'320',GN:'324',
+  GW:'624',GY:'328',HT:'332',HN:'340',HU:'348',IS:'352',IN:'356',ID:'360',IR:'364',IQ:'368',
+  IE:'372',IL:'376',IT:'380',JM:'388',JP:'392',JO:'400',KZ:'398',KE:'404',KI:'296',KP:'408',
+  KR:'410',KW:'414',KG:'417',LA:'418',LV:'428',LB:'422',LS:'426',LR:'430',LY:'434',LI:'438',
+  LT:'440',LU:'442',MK:'807',MG:'450',MW:'454',MY:'458',MV:'462',ML:'466',MT:'470',MH:'584',
+  MR:'478',MU:'480',MX:'484',FM:'583',MD:'498',MC:'492',MN:'496',ME:'499',MA:'504',MZ:'508',
+  MM:'104',NA:'516',NR:'520',NP:'524',NL:'528',NZ:'554',NI:'558',NE:'562',NG:'566',NO:'578',
+  OM:'512',PK:'586',PW:'585',PA:'591',PG:'598',PY:'600',PE:'604',PH:'608',PL:'616',PT:'620',
+  QA:'634',RO:'642',RU:'643',RW:'646',KN:'659',LC:'662',VC:'670',WS:'882',SM:'674',ST:'678',
+  SA:'682',SN:'686',RS:'688',SC:'690',SL:'694',SG:'702',SK:'703',SI:'705',SB:'090',SO:'706',
+  ZA:'710',SS:'728',ES:'724',LK:'144',SD:'729',SR:'740',SZ:'748',SE:'752',CH:'756',SY:'760',
+  TW:'158',TJ:'762',TZ:'834',TH:'764',TL:'626',TG:'768',TO:'776',TT:'780',TN:'788',TR:'792',
+  TM:'795',TV:'798',UG:'800',UA:'804',AE:'784',GB:'826',US:'840',UY:'858',UZ:'860',VU:'548',
+  VE:'862',VN:'704',YE:'887',ZM:'894',ZW:'716',XK:'412',HK:'344',
+};
+
+// Reverse mapping: numeric to alpha-2
+const NUMERIC_TO_ALPHA2: Record<string, string> = {};
+for (const [alpha2, numeric] of Object.entries(ALPHA2_TO_NUMERIC)) {
+  NUMERIC_TO_ALPHA2[numeric] = alpha2;
 }
 
 type MetricKey = 'avg_viral_score' | 'trend_count' | 'app_count' | 'forum_activity' | 'word_velocity';
 
-const METRICS: { key: MetricKey; label: string; icon: string }[] = [
-  { key: 'avg_viral_score', label: 'Viral Score', icon: '🔥' },
-  { key: 'trend_count', label: 'Trend Count', icon: '📈' },
-  { key: 'app_count', label: 'App Count', icon: '📱' },
-  { key: 'forum_activity', label: 'Forum Activity', icon: '💬' },
-  { key: 'word_velocity', label: 'Word Velocity', icon: '⚡' },
+const METRICS: { key: MetricKey; label: string; icon: string; color: string }[] = [
+  { key: 'avg_viral_score', label: 'Viral Score', icon: '🔥', color: '#ec4899' },
+  { key: 'trend_count', label: 'Trend Count', icon: '📈', color: '#22d3ee' },
+  { key: 'app_count', label: 'App Count', icon: '📱', color: '#10b981' },
+  { key: 'forum_activity', label: 'Forum Activity', icon: '💬', color: '#f59e0b' },
+  { key: 'word_velocity', label: 'Word Velocity', icon: '⚡', color: '#a855f7' },
 ];
 
-// ── Helpers ────────────────────────────────────────────
+const PERIODS = ['daily', 'weekly', 'monthly'] as const;
 
-function flagEmoji(code: string): string {
-  if (!code || code.length !== 2) return '🌍';
-  return code.toUpperCase().split('').map(c => String.fromCodePoint(0x1F1E6 + c.charCodeAt(0) - 65)).join('');
+// ── Helpers ────────────────────────────────────────────────────
+
+function formatNum(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toFixed ? (Number.isInteger(n) ? String(n) : n.toFixed(1)) : String(n);
 }
 
-function metricValue(r: RegionMetric | MapDataPoint, key: MetricKey): number {
-  return (r[key] as number) || 0;
+function getColorForValue(normalized: number, baseColor: string): string {
+  // Returns an rgba from transparent to full color based on normalized 0-1
+  const alpha = 0.15 + normalized * 0.85;
+  // Parse hex to rgb
+  const r = parseInt(baseColor.slice(1, 3), 16);
+  const g = parseInt(baseColor.slice(3, 5), 16);
+  const b = parseInt(baseColor.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-function StatCard({ label, value, icon, sub }: { label: string; value: string | number; icon: string; sub?: string }) {
+function getMetricValue(obj: Record<string, unknown> | RegionMetric | MapDataPoint, key: string): number {
+  return (obj as unknown as Record<string, number>)[key] || 0;
+}
+
+function getHeatColor(normalized: number): string {
+  // Dark blue (cold) → cyan → green → yellow → red (hot)
+  if (normalized <= 0) return '#1e1e48';
+  if (normalized < 0.2) return '#1a3a5c';
+  if (normalized < 0.4) return '#0e7490';
+  if (normalized < 0.6) return '#10b981';
+  if (normalized < 0.8) return '#f59e0b';
+  return '#ef4444';
+}
+
+// ── Skeleton Components ────────────────────────────────────────
+
+function StatSkeleton() {
   return (
-    <div className="bg-dark-800 border border-dark-500 rounded-xl p-4">
-      <div className="flex items-center gap-2 mb-1">
-        <span className="text-lg">{icon}</span>
-        <span className="text-xs text-slate-500 uppercase tracking-wider">{label}</span>
-      </div>
-      <div className="text-2xl font-bold text-white">{value}</div>
-      {sub && <div className="text-xs text-slate-500 mt-1">{sub}</div>}
+    <div className="stat-card animate-pulse">
+      <div className="h-3 w-20 bg-dark-500 rounded mb-3" />
+      <div className="h-8 w-16 bg-dark-500 rounded mb-2" />
+      <div className="h-3 w-24 bg-dark-500 rounded" />
     </div>
   );
 }
 
-// ── Main Page ──────────────────────────────────────────
+function MapSkeleton() {
+  return (
+    <div className="card animate-pulse flex items-center justify-center" style={{ height: 480 }}>
+      <div className="text-center">
+        <div className="text-4xl mb-3">🌍</div>
+        <div className="h-4 w-32 bg-dark-500 rounded mx-auto" />
+      </div>
+    </div>
+  );
+}
+
+function ListSkeleton({ rows = 5 }: { rows?: number }) {
+  return (
+    <div className="space-y-3">
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} className="flex items-center gap-3 animate-pulse">
+          <div className="h-8 w-8 bg-dark-500 rounded" />
+          <div className="flex-1 h-4 bg-dark-500 rounded" />
+          <div className="h-4 w-12 bg-dark-500 rounded" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Chart Tooltip ──────────────────────────────────────────────
+
+const ChartTooltip = ({ active, payload, label }: { active?: boolean; payload?: Array<{ name: string; value: number; color: string }>; label?: string }) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="bg-dark-800 border border-dark-500 rounded-lg p-3 shadow-xl text-xs">
+      <p className="text-slate-300 font-medium mb-1">{label}</p>
+      {payload.map((p, i) => (
+        <p key={i} style={{ color: p.color }} className="font-mono">
+          {p.name}: {formatNum(p.value)}
+        </p>
+      ))}
+    </div>
+  );
+};
+
+// ── Main Component ─────────────────────────────────────────────
 
 export default function RegionsPage() {
   const [stats, setStats] = useState<RegionStats | null>(null);
   const [mapData, setMapData] = useState<MapDataPoint[]>([]);
   const [regions, setRegions] = useState<RegionMetric[]>([]);
   const [selectedMetric, setSelectedMetric] = useState<MetricKey>('avg_viral_score');
+  const [period, setPeriod] = useState<typeof PERIODS[number]>('daily');
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
-  const [hoveredRegion, setHoveredRegion] = useState<{ code: string; name: string } | null>(null);
-  const [compareList, setCompareList] = useState<string[]>([]);
+  const [regionDetail, setRegionDetail] = useState<RegionDetail | null>(null);
+  const [compareSelected, setCompareSelected] = useState<Set<string>>(new Set());
   const [compareData, setCompareData] = useState<RegionMetric[]>([]);
-  const [drillDown, setDrillDown] = useState<RegionDetail | null>(null);
-  const [drillDownLoading, setDrillDownLoading] = useState(false);
+  const [showCompare, setShowCompare] = useState(false);
+  const [hoveredGeo, setHoveredGeo] = useState<{ name: string; value: number; x: number; y: number } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [mapZoom, setMapZoom] = useState(1);
+  const [mapCenter, setMapCenter] = useState<[number, number]>([0, 0]);
+  const [rebuilding, setRebuilding] = useState(false);
+  const [rebuildMsg, setRebuildMsg] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [period, setPeriod] = useState<string>('daily');
 
-  // Fetch stats
-  useEffect(() => {
-    fetch('/api/regions/stats').then(r => r.json()).then(setStats).catch(console.error);
-  }, []);
+  // Create lookup from mapData
+  const mapLookup = React.useMemo(() => {
+    const m = new Map<string, MapDataPoint>();
+    for (const d of mapData) m.set(d.code, d);
+    return m;
+  }, [mapData]);
 
-  // Fetch map data when metric or period changes
-  useEffect(() => {
-    fetch(`/api/regions/map-data?metric=${selectedMetric}&period=${period}`)
-      .then(r => r.json()).then(setMapData).catch(console.error);
+  // ── Data Fetching ──────────────────────────────────────
+
+  const fetchAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [statsRes, mapRes, regionsRes] = await Promise.all([
+        fetch('/api/regions/stats'),
+        fetch(`/api/regions/map-data?metric=${selectedMetric}&period=${period}`),
+        fetch(`/api/regions?period=${period}&limit=100`),
+      ]);
+      const [statsData, mapDataArr, regionsData] = await Promise.all([
+        statsRes.json(),
+        mapRes.json(),
+        regionsRes.json(),
+      ]);
+      setStats(statsData);
+      setMapData(Array.isArray(mapDataArr) ? mapDataArr : []);
+      setRegions(Array.isArray(regionsData) ? regionsData : []);
+    } catch (e) {
+      console.error('Failed to fetch region data:', e);
+    } finally {
+      setLoading(false);
+    }
   }, [selectedMetric, period]);
 
-  // Fetch leaderboard
+  useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  // Fetch region detail
   useEffect(() => {
-    const params = new URLSearchParams({ period });
-    if (searchQuery) params.set('search', searchQuery);
-    fetch(`/api/regions?${params}`).then(r => r.json()).then(setRegions).catch(console.error);
-  }, [period, searchQuery]);
+    if (!selectedRegion) { setRegionDetail(null); return; }
+    setDetailLoading(true);
+    fetch(`/api/regions/${selectedRegion}`)
+      .then(r => r.json())
+      .then(data => setRegionDetail(data))
+      .catch(() => setRegionDetail(null))
+      .finally(() => setDetailLoading(false));
+  }, [selectedRegion]);
 
   // Fetch comparison data
   useEffect(() => {
-    if (compareList.length >= 2) {
-      fetch(`/api/regions/compare?codes=${compareList.join(',')}`).then(r => r.json()).then(setCompareData).catch(console.error);
-    } else {
-      setCompareData([]);
-    }
-  }, [compareList]);
-
-  // Region click handler
-  const handleRegionClick = useCallback((code: string, _name: string) => {
-    setSelectedRegion(prev => prev === code ? null : code);
-    setDrillDownLoading(true);
-    fetch(`/api/regions/${code}`)
+    if (compareSelected.size < 2) { setCompareData([]); return; }
+    const codes = Array.from(compareSelected).join(',');
+    fetch(`/api/regions/compare?codes=${codes}`)
       .then(r => r.json())
-      .then((data: RegionDetail) => { setDrillDown(data); setDrillDownLoading(false); })
-      .catch(() => setDrillDownLoading(false));
-  }, []);
+      .then(data => setCompareData(Array.isArray(data) ? data : []))
+      .catch(() => setCompareData([]));
+  }, [compareSelected]);
 
-  const handleRegionHover = useCallback((code: string | null, name: string | null) => {
-    setHoveredRegion(code && name ? { code, name } : null);
-  }, []);
+  // ── Handlers ───────────────────────────────────────────
 
-  // Toggle compare
+  const handleGeoClick = (code: string) => {
+    setSelectedRegion(prev => prev === code ? null : code);
+  };
+
   const toggleCompare = (code: string) => {
-    setCompareList(prev => {
-      if (prev.includes(code)) return prev.filter(c => c !== code);
-      if (prev.length >= 5) return prev;
-      return [...prev, code];
+    setCompareSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(code)) { next.delete(code); }
+      else if (next.size < 5) { next.add(code); }
+      return next;
     });
   };
 
-  // Sorted leaderboard
-  const sortedRegions = [...regions].sort((a, b) => metricValue(b, selectedMetric) - metricValue(a, selectedMetric));
-  const maxLeaderboardVal = sortedRegions.length > 0 ? metricValue(sortedRegions[0], selectedMetric) : 1;
+  const handleRebuild = async () => {
+    setRebuilding(true);
+    setRebuildMsg(null);
+    try {
+      const res = await fetch('/api/regions/rebuild', { method: 'POST' });
+      const data = await res.json();
+      setRebuildMsg(data.message || 'Rebuilt successfully');
+      fetchAll();
+    } catch (e) {
+      setRebuildMsg('Rebuild failed: ' + String(e));
+    } finally {
+      setRebuilding(false);
+      setTimeout(() => setRebuildMsg(null), 5000);
+    }
+  };
 
-  // Radar data for comparison
-  const radarData = compareData.length > 0 ? [
-    { metric: 'Viral Score', ...Object.fromEntries(compareData.map(r => [r.code, r.avg_viral_score])) },
-    { metric: 'Trends', ...Object.fromEntries(compareData.map(r => [r.code, r.trend_count])) },
-    { metric: 'Apps', ...Object.fromEntries(compareData.map(r => [r.code, r.app_count])) },
-    { metric: 'Forums', ...Object.fromEntries(compareData.map(r => [r.code, r.forum_activity])) },
-    { metric: 'Word Vel.', ...Object.fromEntries(compareData.map(r => [r.code, r.word_velocity * 10])) },
-  ] : [];
+  const currentMetricInfo = METRICS.find(m => m.key === selectedMetric) || METRICS[0];
 
-  const RADAR_COLORS = ['#22d3ee', '#06ffa5', '#fbbf24', '#f472b6', '#a78bfa'];
+  // Top 10 for leaderboard
+  const leaderboard = React.useMemo(() => {
+    return [...regions]
+      .sort((a, b) => getMetricValue(b, selectedMetric) - getMetricValue(a, selectedMetric))
+      .slice(0, 10);
+  }, [regions, selectedMetric]);
+
+  const maxLeaderboardVal = leaderboard.length > 0
+    ? Math.max(...leaderboard.map(r => getMetricValue(r, selectedMetric)))
+    : 1;
+
+  // Radar chart data for comparison
+  const radarData = React.useMemo(() => {
+    if (compareData.length === 0) return [];
+    // Normalize each metric to 0-100 for radar display
+    const metricKeys: MetricKey[] = ['avg_viral_score', 'trend_count', 'app_count', 'forum_activity', 'word_velocity'];
+    const maxVals: Record<string, number> = {};
+    for (const k of metricKeys) {
+      maxVals[k] = Math.max(...compareData.map(d => getMetricValue(d, k)), 1);
+    }
+    return metricKeys.map(k => {
+      const info = METRICS.find(m => m.key === k);
+      const entry: Record<string, unknown> = { metric: info?.label || k };
+      for (const d of compareData) {
+        const val = getMetricValue(d, k);
+        entry[d.code] = Math.round((val / maxVals[k]) * 100);
+      }
+      return entry;
+    });
+  }, [compareData]);
+
+  const RADAR_COLORS = ['#22d3ee', '#ec4899', '#10b981', '#f59e0b', '#a855f7'];
 
   return (
-    <div className="space-y-6">
+    <div className="min-h-screen p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
+          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
             🗺️ Region Analysis
-            {hoveredRegion && (
-              <span className="text-base font-normal text-slate-400">
-                {flagEmoji(hoveredRegion.code)} {hoveredRegion.name}
-              </span>
-            )}
           </h1>
-          <p className="text-sm text-slate-500 mt-1">Interactive geo dashboard — viral trends by country</p>
+          <p className="text-sm text-slate-400 mt-1">
+            Interactive geo-intelligence for casual gaming trends worldwide
+          </p>
         </div>
-        <div className="flex items-center gap-2">
-          {/* Period switcher */}
-          {(['daily', 'weekly', 'monthly'] as const).map(p => (
-            <button key={p} onClick={() => setPeriod(p)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${period === p ? 'bg-neon-cyan/20 text-neon-cyan' : 'text-slate-500 hover:text-white hover:bg-dark-700'}`}>
+
+        {/* Period Switcher */}
+        <div className="flex items-center bg-dark-800 border border-dark-500 rounded-lg p-1">
+          {PERIODS.map(p => (
+            <button
+              key={p}
+              onClick={() => setPeriod(p)}
+              className={`px-4 py-1.5 rounded-md text-xs font-medium transition-all ${
+                period === p
+                  ? 'bg-neon-cyan/20 text-neon-cyan'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
               {p.charAt(0).toUpperCase() + p.slice(1)}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Stats Cards */}
-      {stats && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <StatCard icon="🌍" label="Regions Tracked" value={stats.totalRegions} />
-          <StatCard icon="🔥" label="Avg Viral Score" value={stats.avgViralScore} />
-          <StatCard icon="🏆" label="Top Region" value={stats.topRegion ? `${flagEmoji(stats.topRegion.code)} ${stats.topRegion.name}` : '—'} sub={stats.topRegion ? `Score: ${stats.topRegion.avg_viral_score}` : undefined} />
-          <StatCard icon="📊" label="Total Trends" value={stats.totalTrends.toLocaleString()} />
-        </div>
-      )}
+      {/* Stats Row */}
+      <div className="grid grid-cols-4 gap-4">
+        {loading ? (
+          <>
+            <StatSkeleton />
+            <StatSkeleton />
+            <StatSkeleton />
+            <StatSkeleton />
+          </>
+        ) : stats ? (
+          <>
+            <div className="stat-card glow-cyan">
+              <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Total Regions</p>
+              <p className="text-3xl font-bold text-neon-cyan">{stats.totalRegions}</p>
+              <p className="text-xs text-slate-500 mt-1">Countries tracked</p>
+            </div>
+            <div className="stat-card glow-magenta">
+              <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Top Region</p>
+              <p className="text-2xl font-bold text-neon-magenta">
+                {stats.topRegion ? `${FLAGS[stats.topRegion.code] || '🌐'} ${stats.topRegion.name}` : 'N/A'}
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                {stats.topRegion ? `Score: ${stats.topRegion.avg_viral_score}` : ''}
+              </p>
+            </div>
+            <div className="stat-card glow-green">
+              <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Avg Viral Score</p>
+              <p className="text-3xl font-bold text-neon-green">{stats.avgViralScore}</p>
+              <p className="text-xs text-slate-500 mt-1">Across all regions</p>
+            </div>
+            <div className="stat-card glow-amber">
+              <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Total Linked Trends</p>
+              <p className="text-3xl font-bold text-neon-amber">{formatNum(stats.totalTrends)}</p>
+              <p className="text-xs text-slate-500 mt-1">Geo-tagged trends</p>
+            </div>
+          </>
+        ) : null}
+      </div>
 
       {/* Metric Selector */}
-      <div className="flex flex-wrap gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-xs text-slate-500 uppercase tracking-wider mr-2">Map Metric:</span>
         {METRICS.map(m => (
-          <button key={m.key} onClick={() => setSelectedMetric(m.key)} className={`px-4 py-2 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${selectedMetric === m.key ? 'bg-neon-cyan/20 text-neon-cyan border border-neon-cyan/30' : 'bg-dark-800 text-slate-400 border border-dark-500 hover:text-white hover:border-dark-400'}`}>
+          <button
+            key={m.key}
+            onClick={() => setSelectedMetric(m.key)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
+              selectedMetric === m.key
+                ? 'border-opacity-50 text-white'
+                : 'border-dark-500 text-slate-400 hover:text-white hover:border-dark-500'
+            }`}
+            style={selectedMetric === m.key ? { borderColor: m.color, background: `${m.color}20` } : {}}
+          >
             <span>{m.icon}</span>
             <span>{m.label}</span>
           </button>
         ))}
       </div>
 
-      {/* Map + Leaderboard */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Map */}
-        <div className="lg:col-span-2 bg-dark-800 border border-dark-500 rounded-xl p-4 relative">
-          {/* Desktop: map, Mobile: fallback list */}
-          <div className="hidden md:block">
-            <RegionMap
-              data={mapData}
-              selectedRegion={selectedRegion}
-              onRegionClick={handleRegionClick}
-              onRegionHover={handleRegionHover}
-            />
-          </div>
-          {/* Mobile fallback: region list */}
-          <div className="md:hidden space-y-2 max-h-[400px] overflow-y-auto">
-            <p className="text-xs text-slate-500 mb-2">Tap a region to explore:</p>
-            {sortedRegions.slice(0, 20).map(r => (
-              <button key={r.code} onClick={() => handleRegionClick(r.code, r.name)} className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition-all ${selectedRegion === r.code ? 'bg-neon-cyan/10 border border-neon-cyan/30' : 'bg-dark-700 hover:bg-dark-600'}`}>
-                <span className="text-lg">{flagEmoji(r.code)}</span>
-                <span className="text-sm text-white flex-1">{r.name}</span>
-                <span className="text-xs text-neon-cyan font-mono">{metricValue(r, selectedMetric).toLocaleString()}</span>
-              </button>
-            ))}
-          </div>
-          {/* Heat map legend */}
-          <div className="flex items-center gap-2 mt-3 justify-center">
-            <span className="text-[10px] text-slate-500">Low</span>
-            <div className="flex h-2 rounded-full overflow-hidden w-32">
-              <div className="flex-1 bg-[#0f3460]" />
-              <div className="flex-1 bg-[#164e8a]" />
-              <div className="flex-1 bg-[#0ea5e9]" />
-              <div className="flex-1 bg-[#22d3ee]" />
-              <div className="flex-1 bg-[#06ffa5]" />
+      {/* Main Content: Map + Leaderboard */}
+      <div className="grid grid-cols-3 gap-6">
+        {/* World Map */}
+        <div className="col-span-2">
+          {loading ? <MapSkeleton /> : (
+            <div className="card relative" style={{ padding: 0, overflow: 'hidden' }}>
+              <div style={{ height: 480 }}>
+                <ComposableMap
+                  projectionConfig={{ rotate: [-10, 0, 0], scale: 147 }}
+                  style={{ width: '100%', height: '100%' }}
+                >
+                  <ZoomableGroup>
+                    <Geographies geography={GEO_URL}>
+                      {({ geographies }: { geographies: any[] }) =>
+                        geographies.map((geo: any) => {
+                          const numericId = geo.id;
+                          const alpha2 = NUMERIC_TO_ALPHA2[numericId];
+                          const dataPoint = alpha2 ? mapLookup.get(alpha2) : undefined;
+                          const isSelected = alpha2 === selectedRegion;
+
+                          return (
+                            <Geography
+                              key={geo.rsmKey}
+                              geography={geo}
+                              onMouseEnter={(evt: React.MouseEvent) => {
+                                if (dataPoint) {
+                                  setHoveredGeo({
+                                    name: dataPoint.name,
+                                    value: dataPoint.value,
+                                    x: evt.clientX,
+                                    y: evt.clientY,
+                                  });
+                                }
+                              }}
+                              onMouseLeave={() => setHoveredGeo(null)}
+                              onClick={() => { if (alpha2) handleGeoClick(alpha2); }}
+                              style={{
+                                default: {
+                                  fill: isSelected
+                                    ? '#22d3ee'
+                                    : dataPoint
+                                      ? getHeatColor(dataPoint.normalized)
+                                      : '#1e1e48',
+                                  stroke: '#2a2a5a',
+                                  strokeWidth: 0.5,
+                                  outline: 'none',
+                                },
+                                hover: {
+                                  fill: isSelected ? '#22d3ee' : dataPoint ? '#a855f7' : '#2a2a5a',
+                                  stroke: '#94a3b8',
+                                  strokeWidth: 1,
+                                  outline: 'none',
+                                  cursor: alpha2 ? 'pointer' : 'default',
+                                },
+                                pressed: { outline: 'none' },
+                              }}
+                            />
+                          );
+                        })
+                      }
+                    </Geographies>
+                  </ZoomableGroup>
+                </ComposableMap>
+              </div>
+
+              {/* Map Legend */}
+              <div className="absolute bottom-4 left-4 flex items-center gap-2 bg-dark-800/90 backdrop-blur px-3 py-2 rounded-lg border border-dark-500">
+                <span className="text-[10px] text-slate-400">Low</span>
+                <div className="flex gap-0.5">
+                  {[0, 0.2, 0.4, 0.6, 0.8, 1].map(v => (
+                    <div
+                      key={v}
+                      className="w-5 h-3 rounded-sm"
+                      style={{ background: getHeatColor(v) }}
+                    />
+                  ))}
+                </div>
+                <span className="text-[10px] text-slate-400">High</span>
+                <span className="text-[10px] text-slate-500 ml-1">
+                  {currentMetricInfo.icon} {currentMetricInfo.label}
+                </span>
+              </div>
+
+              {/* Hover Tooltip */}
+              {hoveredGeo && (
+                <div
+                  className="fixed z-50 bg-dark-800 border border-dark-500 rounded-lg px-3 py-2 shadow-xl pointer-events-none"
+                  style={{ left: hoveredGeo.x + 12, top: hoveredGeo.y - 40 }}
+                >
+                  <p className="text-xs font-medium text-white">{hoveredGeo.name}</p>
+                  <p className="text-xs text-slate-400">
+                    {currentMetricInfo.label}: <span className="text-white font-mono">{formatNum(hoveredGeo.value)}</span>
+                  </p>
+                </div>
+              )}
             </div>
-            <span className="text-[10px] text-slate-500">High</span>
-          </div>
+          )}
         </div>
 
         {/* Leaderboard */}
-        <div className="bg-dark-800 border border-dark-500 rounded-xl p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-white">🏆 Leaderboard</h2>
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              placeholder="Search…"
-              className="bg-dark-700 text-xs text-white px-2 py-1 rounded border border-dark-500 w-24 focus:outline-none focus:border-neon-cyan/50"
-            />
-          </div>
-          <div className="space-y-1.5 max-h-[380px] overflow-y-auto pr-1">
-            {sortedRegions.map((r, i) => {
-              const val = metricValue(r, selectedMetric);
-              const barWidth = maxLeaderboardVal > 0 ? (val / maxLeaderboardVal) * 100 : 0;
-              const isCompared = compareList.includes(r.code);
-              return (
-                <div key={r.code} className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm cursor-pointer transition-all ${selectedRegion === r.code ? 'bg-neon-cyan/10' : 'hover:bg-dark-700'}`} onClick={() => handleRegionClick(r.code, r.name)}>
-                  <span className="text-xs text-slate-600 w-5 text-right font-mono">{i + 1}</span>
-                  <span className="text-base">{flagEmoji(r.code)}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs text-white truncate">{r.name}</div>
-                    <div className="h-1.5 bg-dark-600 rounded-full mt-0.5 overflow-hidden">
-                      <div className="h-full bg-gradient-to-r from-neon-cyan to-neon-green rounded-full transition-all duration-500" style={{ width: `${barWidth}%` }} />
-                    </div>
-                  </div>
-                  <span className="text-xs font-mono text-neon-cyan w-12 text-right">{typeof val === 'number' && val % 1 !== 0 ? val.toFixed(1) : val}</span>
-                  <button
-                    onClick={e => { e.stopPropagation(); toggleCompare(r.code); }}
-                    className={`text-xs px-1.5 py-0.5 rounded transition-all ${isCompared ? 'bg-neon-purple/20 text-neon-purple' : 'text-slate-600 hover:text-slate-400'}`}
-                    title={isCompared ? 'Remove from compare' : 'Add to compare'}
-                  >
-                    {isCompared ? '✓' : '+'}
-                  </button>
-                </div>
-              );
-            })}
-            {sortedRegions.length === 0 && (
-              <div className="text-center py-8 text-slate-600 text-sm">No region data yet. Run seed or rebuild.</div>
+        <div className="col-span-1">
+          <div className="card h-full" style={{ maxHeight: 520, overflowY: 'auto' }}>
+            <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
+              🏆 Top 10 — {currentMetricInfo.label}
+            </h3>
+            {loading ? <ListSkeleton rows={10} /> : (
+              <div className="space-y-2">
+                {leaderboard.map((r, i) => {
+                  const val = getMetricValue(r, selectedMetric);
+                  const pct = (val / maxLeaderboardVal) * 100;
+                  const isSelected = r.code === selectedRegion;
+                  return (
+                    <button
+                      key={r.code}
+                      onClick={() => handleGeoClick(r.code)}
+                      className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-all ${
+                        isSelected
+                          ? 'bg-neon-cyan/10 border border-neon-cyan/30'
+                          : 'hover:bg-dark-600 border border-transparent'
+                      }`}
+                    >
+                      <span className="text-xs text-slate-500 w-5 font-mono">{i + 1}</span>
+                      <span className="text-base">{FLAGS[r.code] || '🌐'}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-medium text-white truncate">{r.name}</span>
+                          <span className="text-xs font-mono text-slate-300 ml-2">{formatNum(val)}</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-dark-900 rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all"
+                            style={{
+                              width: `${pct}%`,
+                              background: `linear-gradient(90deg, ${currentMetricInfo.color}80, ${currentMetricInfo.color})`,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             )}
           </div>
         </div>
       </div>
 
-      {/* Comparison Panel */}
-      {compareData.length >= 2 && (
-        <div className="bg-dark-800 border border-dark-500 rounded-xl p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold text-white">📊 Region Comparison</h2>
-            <button onClick={() => setCompareList([])} className="text-xs text-slate-500 hover:text-red-400 transition-colors">Clear</button>
-          </div>
-          <div className="flex flex-wrap gap-2 mb-4">
-            {compareData.map(r => (
-              <span key={r.code} className="px-2 py-1 bg-dark-700 rounded-lg text-xs text-white flex items-center gap-1">
-                {flagEmoji(r.code)} {r.name}
-                <button onClick={() => toggleCompare(r.code)} className="text-slate-500 hover:text-red-400 ml-1">×</button>
-              </span>
-            ))}
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Bar chart comparison */}
-            <div>
-              <h3 className="text-xs text-slate-500 mb-2 uppercase tracking-wider">By {METRICS.find(m => m.key === selectedMetric)?.label}</h3>
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={compareData.map(r => ({ name: r.code, value: metricValue(r, selectedMetric), fullName: r.name }))}>
-                  <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 11 }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fill: '#64748b', fontSize: 10 }} axisLine={false} tickLine={false} />
-                  <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8, fontSize: 12 }} labelFormatter={(v) => { const r = compareData.find(c => c.code === v); return r ? `${flagEmoji(r.code)} ${r.name}` : v; }} />
-                  <Bar dataKey="value" fill="#22d3ee" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            {/* Radar chart */}
-            <div>
-              <h3 className="text-xs text-slate-500 mb-2 uppercase tracking-wider">Multi-metric Radar</h3>
-              <ResponsiveContainer width="100%" height={200}>
-                <RadarChart data={radarData}>
-                  <PolarGrid stroke="#334155" />
-                  <PolarAngleAxis dataKey="metric" tick={{ fill: '#94a3b8', fontSize: 10 }} />
-                  <PolarRadiusAxis tick={false} axisLine={false} />
-                  {compareData.map((r, i) => (
-                    <Radar key={r.code} name={`${flagEmoji(r.code)} ${r.code}`} dataKey={r.code} stroke={RADAR_COLORS[i % RADAR_COLORS.length]} fill={RADAR_COLORS[i % RADAR_COLORS.length]} fillOpacity={0.15} />
-                  ))}
-                  <Legend wrapperStyle={{ fontSize: 11 }} />
-                </RadarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Drill-Down Panel */}
+      {/* Region Drill-Down Panel */}
       {selectedRegion && (
-        <div className="bg-dark-800 border border-dark-500 rounded-xl p-5">
+        <div className="card glow-cyan">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-              {flagEmoji(selectedRegion)} {drillDown?.metrics?.name || selectedRegion} — Deep Dive
-            </h2>
-            <button onClick={() => { setSelectedRegion(null); setDrillDown(null); }} className="text-xs text-slate-500 hover:text-red-400 transition-colors">Close ×</button>
+            <h3 className="text-lg font-bold text-white flex items-center gap-2">
+              {FLAGS[selectedRegion] || '🌐'} {regionDetail?.metrics?.name || selectedRegion} — Drill Down
+            </h3>
+            <button
+              onClick={() => setSelectedRegion(null)}
+              className="text-slate-400 hover:text-white text-sm px-3 py-1 rounded-lg hover:bg-dark-600 transition-all"
+            >
+              ✕ Close
+            </button>
           </div>
 
-          {drillDownLoading ? (
-            <div className="text-center py-8 text-slate-500 animate-pulse">Loading region data…</div>
-          ) : drillDown ? (
-            <div className="space-y-6">
-              {/* Region metrics summary */}
-              {drillDown.metrics && (
-                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                  <div className="bg-dark-700 rounded-lg p-3 text-center">
-                    <div className="text-xs text-slate-500">Viral Score</div>
-                    <div className="text-lg font-bold text-neon-cyan">{drillDown.metrics.avg_viral_score}</div>
-                  </div>
-                  <div className="bg-dark-700 rounded-lg p-3 text-center">
-                    <div className="text-xs text-slate-500">Trends</div>
-                    <div className="text-lg font-bold text-white">{drillDown.metrics.trend_count}</div>
-                  </div>
-                  <div className="bg-dark-700 rounded-lg p-3 text-center">
-                    <div className="text-xs text-slate-500">Apps</div>
-                    <div className="text-lg font-bold text-white">{drillDown.metrics.app_count}</div>
-                  </div>
-                  <div className="bg-dark-700 rounded-lg p-3 text-center">
-                    <div className="text-xs text-slate-500">Forum Posts</div>
-                    <div className="text-lg font-bold text-white">{drillDown.metrics.forum_activity}</div>
-                  </div>
-                  <div className="bg-dark-700 rounded-lg p-3 text-center">
-                    <div className="text-xs text-slate-500">Word Velocity</div>
-                    <div className="text-lg font-bold text-neon-green">{drillDown.metrics.word_velocity}</div>
+          {detailLoading ? (
+            <div className="grid grid-cols-5 gap-4">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="animate-pulse">
+                  <div className="h-3 w-16 bg-dark-500 rounded mb-2" />
+                  <div className="h-6 w-12 bg-dark-500 rounded" />
+                </div>
+              ))}
+            </div>
+          ) : regionDetail?.metrics ? (
+            <div>
+              {/* Metrics Grid */}
+              <div className="grid grid-cols-5 gap-4 mb-6">
+                {METRICS.map(m => {
+                  const val = regionDetail.metrics ? getMetricValue(regionDetail.metrics, m.key) : 0;
+                  return (
+                    <div key={m.key} className="bg-dark-800 rounded-lg p-3 border border-dark-500">
+                      <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">{m.icon} {m.label}</p>
+                      <p className="text-xl font-bold" style={{ color: m.color }}>{formatNum(val || 0)}</p>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Extra info */}
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div className="bg-dark-800 rounded-lg p-3 border border-dark-500">
+                  <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">📊 Total Mentions</p>
+                  <p className="text-lg font-bold text-white">{formatNum(regionDetail.metrics.total_mentions || 0)}</p>
+                </div>
+                <div className="bg-dark-800 rounded-lg p-3 border border-dark-500">
+                  <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">🏷️ Top Category</p>
+                  <p className="text-lg font-bold text-white">{regionDetail.metrics.top_category || 'N/A'}</p>
+                </div>
+              </div>
+
+              {/* Linked Trends */}
+              {regionDetail.trends.length > 0 && (
+                <div>
+                  <h4 className="text-sm font-medium text-slate-300 mb-3">🔗 Top Linked Trends</h4>
+                  <div className="grid grid-cols-2 gap-2">
+                    {regionDetail.trends.slice(0, 8).map((t) => (
+                      <div key={t.id} className="flex items-center gap-2 bg-dark-900 rounded-lg px-3 py-2 border border-dark-500">
+                        <span className={`score-badge text-xs ${
+                          t.viral_score >= 70 ? 'score-high' : t.viral_score >= 40 ? 'score-med' : 'score-low'
+                        }`}>
+                          {t.viral_score}
+                        </span>
+                        <span className="text-xs text-white truncate flex-1">{t.title}</span>
+                        <span className="text-[10px] text-slate-500">{t.category}</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
-
-              {/* Tabs: Trends, Words, Apps, Forums */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Top Trends */}
-                <div>
-                  <h3 className="text-xs text-slate-500 uppercase tracking-wider mb-2">🔥 Top Trends</h3>
-                  <div className="space-y-1 max-h-[200px] overflow-y-auto">
-                    {drillDown.trends.length > 0 ? drillDown.trends.slice(0, 10).map((t) => (
-                      <div key={t.id} className="flex items-center gap-2 px-2 py-1.5 bg-dark-700 rounded-lg">
-                        <span className={`text-xs px-1.5 py-0.5 rounded ${t.viral_score >= 70 ? 'bg-neon-cyan/20 text-neon-cyan' : t.viral_score >= 40 ? 'bg-neon-amber/20 text-neon-amber' : 'bg-dark-600 text-slate-400'}`}>{t.viral_score}</span>
-                        <span className="text-xs text-white truncate flex-1">{t.title}</span>
-                        <span className="text-[10px] text-slate-600">{t.category}</span>
-                      </div>
-                    )) : <div className="text-xs text-slate-600 py-4 text-center">No trends linked to this region</div>}
-                  </div>
-                </div>
-
-                {/* Top Words */}
-                <div>
-                  <h3 className="text-xs text-slate-500 uppercase tracking-wider mb-2">💬 Top Words</h3>
-                  <div className="space-y-1 max-h-[200px] overflow-y-auto">
-                    {drillDown.words.length > 0 ? drillDown.words.slice(0, 10).map((w) => (
-                      <div key={w.id} className="flex items-center gap-2 px-2 py-1.5 bg-dark-700 rounded-lg">
-                        <span className="text-xs text-neon-green font-mono">{w.score.toFixed(0)}</span>
-                        <span className="text-xs text-white flex-1">{w.word}</span>
-                        <span className="text-[10px] text-slate-600">×{w.frequency}</span>
-                      </div>
-                    )) : <div className="text-xs text-slate-600 py-4 text-center">No words for this region</div>}
-                  </div>
-                </div>
-
-                {/* Forum Posts */}
-                <div>
-                  <h3 className="text-xs text-slate-500 uppercase tracking-wider mb-2">🎮 Forum Posts</h3>
-                  <div className="space-y-1 max-h-[200px] overflow-y-auto">
-                    {drillDown.forumPosts.length > 0 ? drillDown.forumPosts.slice(0, 10).map((p) => (
-                      <div key={p.id} className="flex items-center gap-2 px-2 py-1.5 bg-dark-700 rounded-lg">
-                        <span className="text-xs text-neon-amber font-mono">{p.score}</span>
-                        <span className="text-xs text-white truncate flex-1">{p.title}</span>
-                        <span className="text-[10px] text-slate-600">{p.source}</span>
-                      </div>
-                    )) : <div className="text-xs text-slate-600 py-4 text-center">No forum posts for this region</div>}
-                  </div>
-                </div>
-
-                {/* Apps */}
-                <div>
-                  <h3 className="text-xs text-slate-500 uppercase tracking-wider mb-2">📱 Apps</h3>
-                  <div className="space-y-1 max-h-[200px] overflow-y-auto">
-                    {drillDown.apps.length > 0 ? drillDown.apps.slice(0, 10).map((a) => (
-                      <div key={a.id} className="flex items-center gap-2 px-2 py-1.5 bg-dark-700 rounded-lg">
-                        <span className="text-xs text-neon-purple font-mono">★{a.rating.toFixed(1)}</span>
-                        <span className="text-xs text-white truncate flex-1">{a.name}</span>
-                        <span className="text-[10px] text-slate-600">{a.store}</span>
-                      </div>
-                    )) : <div className="text-xs text-slate-600 py-4 text-center">No apps for this region</div>}
-                  </div>
-                </div>
-              </div>
             </div>
           ) : (
-            <div className="text-center py-8 text-slate-600">No data available for this region</div>
+            <p className="text-sm text-slate-400">No data available for this region.</p>
           )}
         </div>
       )}
+
+      {/* Comparison Section */}
+      <div className="card">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-bold text-white flex items-center gap-2">
+            ⚖️ Region Comparison
+            <span className="text-[10px] text-slate-500 font-normal">(Select 2-5 regions)</span>
+          </h3>
+          <button
+            onClick={() => setShowCompare(prev => !prev)}
+            className={`text-xs px-3 py-1.5 rounded-lg transition-all ${
+              showCompare ? 'bg-neon-purple/20 text-neon-purple' : 'bg-dark-600 text-slate-400 hover:text-white'
+            }`}
+          >
+            {showCompare ? 'Hide Selector' : 'Select Regions'}
+          </button>
+        </div>
+
+        {showCompare && (
+          <div className="flex flex-wrap gap-2 mb-4 p-3 bg-dark-900 rounded-lg border border-dark-500">
+            {regions.slice(0, 30).map(r => (
+              <button
+                key={r.code}
+                onClick={() => toggleCompare(r.code)}
+                className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-all border ${
+                  compareSelected.has(r.code)
+                    ? 'bg-neon-purple/20 border-neon-purple/40 text-white'
+                    : 'border-dark-500 text-slate-400 hover:text-white hover:border-dark-500'
+                }`}
+              >
+                <span>{FLAGS[r.code] || '🌐'}</span>
+                <span>{r.code}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {compareSelected.size >= 2 && compareData.length > 0 ? (
+          <div className="grid grid-cols-2 gap-6">
+            {/* Radar Chart */}
+            <div>
+              <h4 className="text-xs text-slate-400 uppercase tracking-wider mb-3">Radar Overview</h4>
+              <ResponsiveContainer width="100%" height={320}>
+                <RadarChart data={radarData}>
+                  <PolarGrid stroke="#2a2a5a" />
+                  <PolarAngleAxis dataKey="metric" tick={{ fill: '#94a3b8', fontSize: 11 }} />
+                  <PolarRadiusAxis tick={{ fill: '#64748b', fontSize: 9 }} domain={[0, 100]} />
+                  {Array.from(compareSelected).map((code, i) => (
+                    <Radar
+                      key={code}
+                      name={`${FLAGS[code] || ''} ${code}`}
+                      dataKey={code}
+                      stroke={RADAR_COLORS[i % RADAR_COLORS.length]}
+                      fill={RADAR_COLORS[i % RADAR_COLORS.length]}
+                      fillOpacity={0.15}
+                    />
+                  ))}
+                  <Legend
+                    wrapperStyle={{ fontSize: 11, color: '#94a3b8' }}
+                  />
+                  <Tooltip content={<ChartTooltip />} />
+                </RadarChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Bar Chart comparison */}
+            <div>
+              <h4 className="text-xs text-slate-400 uppercase tracking-wider mb-3">Side-by-Side — {currentMetricInfo.label}</h4>
+              <ResponsiveContainer width="100%" height={320}>
+                <BarChart data={compareData.map(d => ({
+                  name: `${FLAGS[d.code] || ''} ${d.code}`,
+                  value: getMetricValue(d, selectedMetric),
+                  code: d.code,
+                }))}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#2a2a5a" />
+                  <XAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 11 }} />
+                  <YAxis tick={{ fill: '#64748b', fontSize: 10 }} />
+                  <Tooltip content={<ChartTooltip />} />
+                  <Bar dataKey="value" name={currentMetricInfo.label} radius={[4, 4, 0, 0]}>
+                    {compareData.map((d, i) => (
+                      <Cell key={d.code} fill={RADAR_COLORS[i % RADAR_COLORS.length]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        ) : (
+          <div className="text-center py-8 text-slate-500 text-sm">
+            {compareSelected.size < 2
+              ? 'Select at least 2 regions above to compare metrics'
+              : 'Loading comparison data...'}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
