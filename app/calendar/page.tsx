@@ -1,9 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
-import {
-  AreaChart, Area, ResponsiveContainer, Tooltip as ReTooltip, XAxis, YAxis,
-} from 'recharts';
+import { useState, useEffect, useCallback } from 'react';
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -21,8 +18,18 @@ interface CalendarEvent {
   tags: string;
   color: string;
   data_json: string;
-  created_at: string;
-  updated_at: string;
+}
+
+interface CalendarStats {
+  totalEvents: number;
+  upcomingEvents: number;
+  upcomingWeek: number;
+  activePatterns: number;
+  recentMilestones: number;
+  eventsByType: Array<{ event_type: string; count: number }>;
+  eventsByRegion: Array<{ region: string; count: number }>;
+  avgImpact: number;
+  nextHighImpact: CalendarEvent | null;
 }
 
 interface SeasonalPattern {
@@ -38,7 +45,6 @@ interface SeasonalPattern {
   trough_period: string;
   confidence: number;
   sample_size: number;
-  data_json: string;
 }
 
 interface Milestone {
@@ -46,16 +52,17 @@ interface Milestone {
   title: string;
   description: string | null;
   milestone_type: string;
-  entity_type: string;
-  entity_name: string;
-  metric: string;
+  entity_type: string | null;
+  entity_id: number | null;
+  entity_name: string | null;
+  metric: string | null;
   value: number;
   previous_value: number;
   threshold: number;
   significance: number;
   detected_at: string;
-  event_title?: string;
-  event_date?: string;
+  event_title: string | null;
+  event_date: string | null;
 }
 
 interface TimelineEntry {
@@ -67,17 +74,7 @@ interface TimelineEntry {
   subtype: string;
   impact: number;
   color: string;
-}
-
-interface CalendarStats {
-  totalEvents: number;
-  upcomingEvents: number;
-  upcomingWeek: number;
-  activePatterns: number;
-  recentMilestones: number;
-  eventsByType: Array<{ event_type: string; count: number }>;
-  avgImpact: number;
-  nextHighImpact: CalendarEvent | null;
+  entity_link?: { type: string; id: number; name: string } | null;
 }
 
 interface Prediction {
@@ -91,70 +88,51 @@ interface Prediction {
   type: string;
 }
 
-// ── Helpers ────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────
+
+const EVENT_TYPE_ICONS: Record<string, string> = {
+  holiday: '🎄',
+  conference: '🎤',
+  sale: '🏷️',
+  cultural: '🌍',
+  gaming: '🎮',
+  school: '🎒',
+};
 
 const EVENT_TYPE_COLORS: Record<string, string> = {
-  holiday: '#ef4444',
-  gaming: '#22c55e',
-  sales: '#3b82f6',
-  conference: '#eab308',
-  seasonal: '#06b6d4',
-  default: '#8b5cf6',
+  holiday: 'bg-red-500/20 text-red-400 border-red-500/30',
+  conference: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  sale: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+  cultural: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
+  gaming: 'bg-green-500/20 text-green-400 border-green-500/30',
+  school: 'bg-teal-500/20 text-teal-400 border-teal-500/30',
 };
 
-const EVENT_TYPE_DOTS: Record<string, string> = {
-  holiday: '🔴',
-  gaming: '🟢',
-  sales: '🔵',
-  conference: '🟡',
-  seasonal: '🟣',
+const MILESTONE_TYPE_ICONS: Record<string, string> = {
+  threshold: '🎯',
+  spike: '📈',
+  streak: '🔥',
+  record: '🏆',
 };
-
-function getImpactLabel(score: number): { label: string; className: string } {
-  if (score >= 80) return { label: 'High', className: 'bg-red-500/20 text-red-400 border border-red-500/30' };
-  if (score >= 50) return { label: 'Medium', className: 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30' };
-  return { label: 'Low', className: 'bg-green-500/20 text-green-400 border border-green-500/30' };
-}
-
-function daysUntil(dateStr: string): number {
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
-  const target = new Date(dateStr);
-  return Math.ceil((target.getTime() - now.getTime()) / 86400000);
-}
 
 function formatDate(dateStr: string): string {
-  return new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const d = new Date(dateStr + 'T00:00:00');
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function getDaysInMonth(year: number, month: number): number {
   return new Date(year, month + 1, 0).getDate();
 }
 
-function getFirstDayOfWeek(year: number, month: number): number {
+function getFirstDayOfMonth(year: number, month: number): number {
   return new Date(year, month, 1).getDay();
 }
 
-function parseSafeJson(str: string | null | undefined): unknown {
-  if (!str) return null;
-  try { return JSON.parse(str); } catch { return null; }
+function safeParse(json: string): unknown[] {
+  try { return JSON.parse(json); } catch { return []; }
 }
 
-function formatMetricValue(value: number, metric: string): string {
-  if (metric.includes('revenue') || metric === 'ecpm' || metric === 'ad_spend') {
-    if (value >= 1e9) return '$' + (value / 1e9).toFixed(1) + 'B';
-    if (value >= 1e6) return '$' + (value / 1e6).toFixed(1) + 'M';
-    if (value >= 1e3) return '$' + (value / 1e3).toFixed(1) + 'K';
-    return '$' + value.toFixed(2);
-  }
-  if (metric.includes('retention') || metric === 'genre_share') return (value * 100).toFixed(1) + '%';
-  if (value >= 1e9) return (value / 1e9).toFixed(1) + 'B';
-  if (value >= 1e6) return (value / 1e6).toFixed(1) + 'M';
-  if (value >= 1e3) return (value / 1e3).toFixed(1) + 'K';
-  return value.toLocaleString();
-}
-
-// ── Main Page Component ────────────────────────────────────────
+// ── Main Component ──────────────────────────────────────────────
 
 export default function CalendarPage() {
   const [stats, setStats] = useState<CalendarStats | null>(null);
@@ -165,29 +143,27 @@ export default function CalendarPage() {
   const [predictions, setPredictions] = useState<Prediction[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Calendar state
-  const today = new Date();
-  const [viewYear, setViewYear] = useState(today.getFullYear());
-  const [viewMonth, setViewMonth] = useState(today.getMonth());
-  const [selectedDay, setSelectedDay] = useState<number | null>(null);
+  // Calendar grid state
+  const now = new Date();
+  const [viewYear, setViewYear] = useState(now.getFullYear());
+  const [viewMonth, setViewMonth] = useState(now.getMonth());
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
+
+  // Quick view
+  const [quickView, setQuickView] = useState<'month' | 'week'>('month');
 
   // Modal state
   const [modalOpen, setModalOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState<Partial<CalendarEvent> | null>(null);
 
-  // Active tab for sections
-  const [activeSection, setActiveSection] = useState<'timeline' | 'alerts' | 'patterns' | 'milestones'>('timeline');
-
-  // ── Data Fetching ──────────────────────────────────────────
-
-  const fetchAll = useCallback(async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     try {
       const [statsRes, eventsRes, patternsRes, milestonesRes, timelineRes, predsRes] = await Promise.all([
         fetch('/api/calendar/stats'),
         fetch('/api/calendar/events'),
         fetch('/api/calendar/patterns'),
-        fetch('/api/calendar/milestones'),
+        fetch('/api/calendar/milestones?limit=20'),
         fetch('/api/calendar/timeline'),
         fetch('/api/calendar/predictions'),
       ]);
@@ -202,69 +178,46 @@ export default function CalendarPage() {
       setTimeline(Array.isArray(t) ? t : []);
       setPredictions(Array.isArray(pr) ? pr : []);
     } catch (err) {
-      console.error('Failed to fetch calendar data:', err);
-    } finally {
-      setLoading(false);
+      console.error('Failed to load calendar data:', err);
     }
+    setLoading(false);
   }, []);
 
-  useEffect(() => { fetchAll(); }, [fetchAll]);
+  useEffect(() => { fetchData(); }, [fetchData]);
 
-  // ── Calendar Grid Logic ────────────────────────────────────
-
+  // Events for the current grid month
+  const monthStart = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-01`;
   const daysInMonth = getDaysInMonth(viewYear, viewMonth);
-  const firstDay = getFirstDayOfWeek(viewYear, viewMonth);
-  const monthName = new Date(viewYear, viewMonth).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  const monthEnd = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
 
-  // Map events to days
-  const eventsByDay = new Map<number, CalendarEvent[]>();
-  for (const ev of events) {
-    const evDate = new Date(ev.start_date + 'T00:00:00');
-    if (evDate.getFullYear() === viewYear && evDate.getMonth() === viewMonth) {
-      const day = evDate.getDate();
-      const existing = eventsByDay.get(day) || [];
-      existing.push(ev);
-      eventsByDay.set(day, existing);
-    }
+  const eventsInMonth = events.filter(ev => {
+    return ev.start_date >= monthStart && ev.start_date <= monthEnd;
+  });
+
+  // Group events by day
+  const eventsByDay: Record<string, CalendarEvent[]> = {};
+  for (const ev of eventsInMonth) {
+    const day = ev.start_date;
+    if (!eventsByDay[day]) eventsByDay[day] = [];
+    eventsByDay[day].push(ev);
   }
 
-  const isToday = (day: number) =>
-    viewYear === today.getFullYear() && viewMonth === today.getMonth() && day === today.getDate();
+  // Selected day events
+  const selectedDayEvents = selectedDay ? (eventsByDay[selectedDay] || []) : [];
 
-  const prevMonth = () => {
-    if (viewMonth === 0) { setViewYear(viewYear - 1); setViewMonth(11); }
-    else setViewMonth(viewMonth - 1);
-    setSelectedDay(null);
-  };
+  // Quick view filter for upcoming alerts
+  const today = now.toISOString().slice(0, 10);
+  const weekFromNow = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  const monthFromNow = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+  const alertCutoff = quickView === 'week' ? weekFromNow : monthFromNow;
+  const upcomingAlerts = events
+    .filter(ev => ev.start_date >= today && ev.start_date <= alertCutoff)
+    .sort((a, b) => a.start_date.localeCompare(b.start_date))
+    .slice(0, 10);
 
-  const nextMonth = () => {
-    if (viewMonth === 11) { setViewYear(viewYear + 1); setViewMonth(0); }
-    else setViewMonth(viewMonth + 1);
-    setSelectedDay(null);
-  };
+  // ── Modal handlers ──────────────────────────────────────────
 
-  const goToToday = () => {
-    setViewYear(today.getFullYear());
-    setViewMonth(today.getMonth());
-    setSelectedDay(null);
-  };
-
-  // ── Event CRUD ─────────────────────────────────────────────
-
-  const openAddEvent = (day?: number) => {
-    const startDate = day
-      ? `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-      : new Date().toISOString().slice(0, 10);
-    setEditingEvent({ title: '', event_type: 'holiday', start_date: startDate, impact_score: 50, region: 'global', recurrence: 'once' });
-    setModalOpen(true);
-  };
-
-  const openEditEvent = (ev: CalendarEvent) => {
-    setEditingEvent({ ...ev });
-    setModalOpen(true);
-  };
-
-  const saveEvent = async () => {
+  async function handleSaveEvent() {
     if (!editingEvent?.title || !editingEvent?.start_date) return;
     try {
       if (editingEvent.id) {
@@ -282,719 +235,412 @@ export default function CalendarPage() {
       }
       setModalOpen(false);
       setEditingEvent(null);
-      fetchAll();
+      fetchData();
     } catch (err) {
       console.error('Failed to save event:', err);
     }
-  };
+  }
 
-  const deleteEvent = async () => {
-    if (!editingEvent?.id) return;
+  async function handleDeleteEvent(id: number) {
+    if (!confirm('Delete this event?')) return;
     try {
-      await fetch(`/api/calendar/events?id=${editingEvent.id}`, { method: 'DELETE' });
-      setModalOpen(false);
-      setEditingEvent(null);
-      fetchAll();
+      await fetch(`/api/calendar/events?id=${id}`, { method: 'DELETE' });
+      fetchData();
     } catch (err) {
       console.error('Failed to delete event:', err);
     }
-  };
+  }
 
-  // ── Upcoming events (next 30 days) ─────────────────────────
+  // ── Calendar Grid ──────────────────────────────────────────
 
-  const nowStr = new Date().toISOString().slice(0, 10);
-  const upcomingEvents = events
-    .filter(e => e.start_date >= nowStr && daysUntil(e.start_date) <= 30)
-    .sort((a, b) => a.start_date.localeCompare(b.start_date));
+  const firstDay = getFirstDayOfMonth(viewYear, viewMonth);
+  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-  // Selected day events
-  const selectedDayEvents = selectedDay ? (eventsByDay.get(selectedDay) || []) : [];
+  function prevMonth() {
+    if (viewMonth === 0) { setViewMonth(11); setViewYear(viewYear - 1); }
+    else setViewMonth(viewMonth - 1);
+    setSelectedDay(null);
+  }
 
-  // ── Loading State ──────────────────────────────────────────
+  function nextMonth() {
+    if (viewMonth === 11) { setViewMonth(0); setViewYear(viewYear + 1); }
+    else setViewMonth(viewMonth + 1);
+    setSelectedDay(null);
+  }
 
   if (loading) {
     return (
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-white">📅 Calendar Trends</h1>
-            <p className="text-sm text-slate-400 mt-1">Loading calendar data...</p>
-          </div>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          {[1, 2, 3, 4].map(i => (
-            <div key={i} className="card animate-pulse h-28" />
-          ))}
-        </div>
-        <div className="card animate-pulse h-96" />
+      <div className="flex items-center justify-center h-64">
+        <div className="text-slate-400 animate-pulse text-lg">Loading Calendar Trends...</div>
       </div>
     );
   }
 
-  // ── Render ─────────────────────────────────────────────────
-
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">📅 Calendar Trends</h1>
-          <p className="text-sm text-slate-400 mt-1">
-            Track events, seasonal patterns &amp; engagement milestones
-          </p>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-2">📅 Calendar Trends</h1>
+          <p className="text-slate-400 text-sm mt-1">Seasonal intelligence & engagement forecasting</p>
         </div>
-        <button
-          onClick={() => openAddEvent()}
-          className="px-4 py-2 bg-gradient-to-r from-neon-cyan to-neon-purple text-white rounded-lg text-sm font-medium hover:opacity-90 transition-opacity"
-        >
-          + Add Event
-        </button>
+        <div className="flex items-center gap-3">
+          <div className="flex bg-dark-700 rounded-lg p-0.5">
+            <button
+              onClick={() => setQuickView('week')}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${quickView === 'week' ? 'bg-neon-cyan/20 text-neon-cyan' : 'text-slate-400 hover:text-white'}`}
+            >
+              This Week
+            </button>
+            <button
+              onClick={() => setQuickView('month')}
+              className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${quickView === 'month' ? 'bg-neon-cyan/20 text-neon-cyan' : 'text-slate-400 hover:text-white'}`}
+            >
+              This Month
+            </button>
+          </div>
+          <button
+            onClick={() => { setEditingEvent({ event_type: 'holiday', recurrence: 'once', region: 'global', impact_score: 50, color: '#3b82f6' }); setModalOpen(true); }}
+            className="px-4 py-2 bg-neon-cyan/20 text-neon-cyan rounded-lg text-sm font-medium hover:bg-neon-cyan/30 transition"
+          >
+            + Add Event
+          </button>
+        </div>
       </div>
 
-      {/* ── Stats Row ─────────────────────────────────────── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* Stats Row */}
+      <div className="grid grid-cols-4 gap-4">
+        <StatCard title="Upcoming Events" value={stats?.upcomingEvents || 0} subtitle={`${stats?.upcomingWeek || 0} this week`} icon="📆" color="cyan" />
+        <StatCard title="Active Patterns" value={stats?.activePatterns || 0} subtitle={`${patterns.length} total detected`} icon="🔄" color="purple" />
+        <StatCard title="Recent Milestones" value={stats?.recentMilestones || 0} subtitle="last 7 days" icon="🏆" color="amber" />
         <StatCard
-          label="Upcoming Events"
-          value={stats?.upcomingEvents ?? 0}
-          sub="Next 30 days"
-          gradient="from-blue-500 to-cyan-500"
-          icon="📆"
-        />
-        <StatCard
-          label="Active Patterns"
-          value={stats?.activePatterns ?? 0}
-          sub="Confidence ≥ 50%"
-          gradient="from-purple-500 to-pink-500"
-          icon="🔄"
-        />
-        <StatCard
-          label="Recent Milestones"
-          value={stats?.recentMilestones ?? 0}
-          sub="Last 7 days"
-          gradient="from-amber-500 to-orange-500"
-          icon="🎯"
-        />
-        <StatCard
-          label="Next Predicted Spike"
-          value={stats?.nextHighImpact ? formatDate(stats.nextHighImpact.start_date as string) : 'N/A'}
-          sub={stats?.nextHighImpact ? (stats.nextHighImpact.title as string) : 'No upcoming spikes'}
-          gradient="from-emerald-500 to-teal-500"
-          icon="🔮"
-          isText
+          title="Next Predicted Spike"
+          value={predictions.length > 0 ? `${Math.round(predictions[0].confidence * 100)}%` : 'N/A'}
+          subtitle={predictions.length > 0 ? predictions[0].event_title.slice(0, 30) : 'No predictions'}
+          icon="📈"
+          color="green"
         />
       </div>
 
-      {/* ── Calendar Grid + Selected Day ──────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Calendar */}
-        <div className="lg:col-span-2 card">
+      {/* Main Grid: Calendar + Selected Day */}
+      <div className="grid grid-cols-3 gap-6">
+        {/* Calendar Grid */}
+        <div className="col-span-2 bg-dark-800 rounded-xl border border-dark-500 p-4">
           <div className="flex items-center justify-between mb-4">
-            <button onClick={prevMonth} className="p-2 hover:bg-dark-600 rounded-lg text-slate-400 hover:text-white transition-colors">
-              ◀
-            </button>
-            <div className="flex items-center gap-3">
-              <h2 className="text-lg font-semibold text-white">{monthName}</h2>
-              <button onClick={goToToday} className="text-xs px-2 py-1 bg-dark-600 text-slate-400 hover:text-white rounded transition-colors">
-                Today
-              </button>
-            </div>
-            <button onClick={nextMonth} className="p-2 hover:bg-dark-600 rounded-lg text-slate-400 hover:text-white transition-colors">
-              ▶
-            </button>
+            <button onClick={prevMonth} className="p-2 hover:bg-dark-600 rounded-lg text-slate-400 hover:text-white transition">←</button>
+            <h2 className="text-lg font-semibold text-white">{monthNames[viewMonth]} {viewYear}</h2>
+            <button onClick={nextMonth} className="p-2 hover:bg-dark-600 rounded-lg text-slate-400 hover:text-white transition">→</button>
           </div>
 
           {/* Day headers */}
-          <div className="grid grid-cols-7 gap-1 mb-1">
-            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
-              <div key={d} className="text-center text-xs text-slate-500 font-medium py-1">{d}</div>
+          <div className="grid grid-cols-7 mb-2">
+            {dayNames.map(d => (
+              <div key={d} className="text-center text-xs font-medium text-slate-500 py-1">{d}</div>
             ))}
           </div>
 
-          {/* Day cells */}
+          {/* Calendar cells */}
           <div className="grid grid-cols-7 gap-1">
-            {/* Empty cells for offset */}
+            {/* Empty cells before first day */}
             {Array.from({ length: firstDay }).map((_, i) => (
               <div key={`empty-${i}`} className="h-20 rounded-lg" />
             ))}
+
             {/* Day cells */}
             {Array.from({ length: daysInMonth }).map((_, i) => {
               const day = i + 1;
-              const dayEvents = eventsByDay.get(day) || [];
-              const isTodayCell = isToday(day);
-              const isSelected = selectedDay === day;
+              const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+              const dayEvents = eventsByDay[dateStr] || [];
+              const isToday = dateStr === today;
+              const isSelected = dateStr === selectedDay;
 
               return (
                 <button
                   key={day}
-                  onClick={() => setSelectedDay(isSelected ? null : day)}
+                  onClick={() => setSelectedDay(dateStr === selectedDay ? null : dateStr)}
                   className={`h-20 rounded-lg p-1.5 text-left transition-all border ${
-                    isSelected
-                      ? 'border-neon-cyan bg-dark-600 ring-1 ring-neon-cyan/50'
-                      : isTodayCell
-                        ? 'border-neon-cyan/50 bg-dark-700'
-                        : 'border-transparent hover:border-dark-400 hover:bg-dark-700'
+                    isSelected ? 'border-neon-cyan bg-neon-cyan/10' :
+                    isToday ? 'border-neon-cyan/50 bg-dark-700' :
+                    dayEvents.length > 0 ? 'border-dark-400 bg-dark-700 hover:border-dark-300' :
+                    'border-transparent hover:bg-dark-700/50'
                   }`}
                 >
-                  <div className={`text-xs font-medium ${isTodayCell ? 'text-neon-cyan' : 'text-slate-400'}`}>
+                  <span className={`text-xs font-medium ${isToday ? 'text-neon-cyan' : isSelected ? 'text-white' : 'text-slate-400'}`}>
                     {day}
-                  </div>
-                  <div className="flex flex-wrap gap-0.5 mt-1">
-                    {dayEvents.slice(0, 3).map((ev, idx) => (
-                      <span key={idx} className="text-[10px]" title={ev.title}>
-                        {EVENT_TYPE_DOTS[ev.event_type] || '⚪'}
-                      </span>
+                  </span>
+                  <div className="mt-0.5 flex flex-wrap gap-0.5">
+                    {dayEvents.slice(0, 3).map((ev, j) => (
+                      <div
+                        key={j}
+                        className="w-2 h-2 rounded-full flex-shrink-0"
+                        style={{ backgroundColor: ev.color || '#3b82f6' }}
+                        title={ev.title}
+                      />
                     ))}
                     {dayEvents.length > 3 && (
                       <span className="text-[9px] text-slate-500">+{dayEvents.length - 3}</span>
                     )}
                   </div>
+                  {dayEvents.length > 0 && (
+                    <div className="mt-0.5 text-[10px] text-slate-400 truncate">{dayEvents[0].title}</div>
+                  )}
                 </button>
               );
             })}
           </div>
-
-          {/* Legend */}
-          <div className="flex flex-wrap gap-3 mt-3 pt-3 border-t border-dark-500">
-            {Object.entries(EVENT_TYPE_DOTS).map(([type, dot]) => (
-              <span key={type} className="flex items-center gap-1 text-xs text-slate-400">
-                {dot} {type}
-              </span>
-            ))}
-          </div>
         </div>
 
-        {/* Selected Day / Quick Info */}
-        <div className="card">
+        {/* Selected Day Detail / Upcoming Alerts */}
+        <div className="space-y-4">
           {selectedDay && selectedDayEvents.length > 0 ? (
-            <>
-              <h3 className="text-sm font-semibold text-white mb-3">
-                {new Date(viewYear, viewMonth, selectedDay).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
-              </h3>
-              <div className="space-y-3">
+            <div className="bg-dark-800 rounded-xl border border-dark-500 p-4">
+              <h3 className="text-sm font-semibold text-white mb-3">{formatDate(selectedDay)}</h3>
+              <div className="space-y-2">
                 {selectedDayEvents.map(ev => (
-                  <button
-                    key={ev.id}
-                    onClick={() => openEditEvent(ev)}
-                    className="w-full text-left p-3 bg-dark-700 rounded-lg hover:bg-dark-600 transition-colors border border-dark-500"
-                  >
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: ev.color || EVENT_TYPE_COLORS[ev.event_type] || EVENT_TYPE_COLORS.default }} />
-                      <span className="text-sm font-medium text-white">{ev.title}</span>
+                  <div key={ev.id} className={`p-3 rounded-lg border ${EVENT_TYPE_COLORS[ev.event_type] || 'bg-dark-700 text-slate-300 border-dark-500'}`}>
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-center gap-2">
+                        <span>{EVENT_TYPE_ICONS[ev.event_type] || '📌'}</span>
+                        <span className="text-sm font-medium">{ev.title}</span>
+                      </div>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => { setEditingEvent(ev); setModalOpen(true); }}
+                          className="text-xs px-2 py-0.5 rounded bg-dark-600 text-slate-400 hover:text-white transition"
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          onClick={() => handleDeleteEvent(ev.id)}
+                          className="text-xs px-2 py-0.5 rounded bg-dark-600 text-slate-400 hover:text-red-400 transition"
+                        >
+                          🗑️
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2 text-xs text-slate-400">
-                      <span className="capitalize">{ev.event_type}</span>
-                      <span>•</span>
+                    {ev.description && <p className="text-xs mt-1 opacity-80">{ev.description}</p>}
+                    <div className="flex items-center gap-2 mt-2 text-xs opacity-70">
                       <span>Impact: {ev.impact_score}</span>
                       <span>•</span>
                       <span>{ev.region}</span>
+                      <span>•</span>
+                      <span>{ev.recurrence}</span>
                     </div>
-                    {ev.description && (
-                      <p className="text-xs text-slate-500 mt-1 line-clamp-2">{ev.description}</p>
+                    {ev.categories && (
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {(safeParse(ev.categories) as string[]).map((c, i) => (
+                          <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-dark-900/50">{c}</span>
+                        ))}
+                      </div>
                     )}
-                  </button>
+                  </div>
                 ))}
               </div>
-            </>
-          ) : selectedDay ? (
-            <div className="text-center py-8">
-              <p className="text-slate-500 text-sm mb-3">No events on this day</p>
-              <button
-                onClick={() => openAddEvent(selectedDay)}
-                className="text-xs px-3 py-1.5 bg-dark-600 text-neon-cyan rounded-lg hover:bg-dark-500 transition-colors"
-              >
-                + Add Event
-              </button>
             </div>
           ) : (
-            <div className="space-y-4">
-              <h3 className="text-sm font-semibold text-white">📊 Quick Stats</h3>
-              <div className="space-y-2">
-                <QuickStat label="Total Events" value={stats?.totalEvents ?? 0} />
-                <QuickStat label="This Week" value={stats?.upcomingWeek ?? 0} />
-                <QuickStat label="Avg Impact" value={stats?.avgImpact ?? 0} />
-                <QuickStat label="Event Types" value={stats?.eventsByType?.length ?? 0} />
-              </div>
-              {stats?.nextHighImpact && (
-                <div className="mt-4 p-3 bg-gradient-to-r from-red-500/10 to-orange-500/10 rounded-lg border border-red-500/20">
-                  <p className="text-xs text-slate-400 mb-1">🔥 Next High-Impact</p>
-                  <p className="text-sm font-medium text-white">{stats.nextHighImpact.title}</p>
-                  <p className="text-xs text-slate-400 mt-1">{formatDate(stats.nextHighImpact.start_date as string)}</p>
+            <div className="bg-dark-800 rounded-xl border border-dark-500 p-4">
+              <h3 className="text-sm font-semibold text-white mb-3">
+                🔔 Upcoming Alerts
+                <span className="text-xs text-slate-500 ml-2">({quickView === 'week' ? 'This Week' : 'This Month'})</span>
+              </h3>
+              {upcomingAlerts.length === 0 ? (
+                <p className="text-xs text-slate-500">No upcoming events</p>
+              ) : (
+                <div className="space-y-2">
+                  {upcomingAlerts.map(ev => (
+                    <div key={ev.id} className="flex items-center gap-3 p-2 rounded-lg bg-dark-700/50 hover:bg-dark-700 transition">
+                      <div className="w-1 h-8 rounded-full flex-shrink-0" style={{ backgroundColor: ev.color || '#3b82f6' }} />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-medium text-white truncate">{ev.title}</div>
+                        <div className="text-[10px] text-slate-500">{formatDate(ev.start_date)}</div>
+                      </div>
+                      <div className="flex-shrink-0">
+                        <ImpactBadge score={ev.impact_score} />
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
           )}
-        </div>
-      </div>
 
-      {/* ── Section Tabs ──────────────────────────────────── */}
-      <div className="flex gap-2 border-b border-dark-500 pb-1">
-        {([
-          { key: 'timeline', label: '🕐 Timeline', },
-          { key: 'alerts', label: '🔔 Upcoming Alerts' },
-          { key: 'patterns', label: '🔄 Patterns' },
-          { key: 'milestones', label: '🎯 Milestones' },
-        ] as const).map(tab => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveSection(tab.key)}
-            className={`px-4 py-2 text-sm font-medium rounded-t-lg transition-colors ${
-              activeSection === tab.key
-                ? 'bg-dark-700 text-neon-cyan border-b-2 border-neon-cyan'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {/* ── Timeline Section ──────────────────────────────── */}
-      {activeSection === 'timeline' && (
-        <div className="card overflow-hidden">
-          <h3 className="text-sm font-semibold text-white mb-4">Event Timeline</h3>
-          {timeline.length === 0 ? (
-            <p className="text-slate-500 text-sm text-center py-8">No timeline entries</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <div className="min-w-[600px]">
-                {/* Timeline bar */}
-                <div className="relative pl-8">
-                  <div className="absolute left-3 top-0 bottom-0 w-0.5 bg-dark-500" />
-                  <div className="space-y-4">
-                    {timeline.slice(0, 30).map((entry, idx) => {
-                      const marker = entry.type === 'event' ? '✅' : entry.type === 'milestone' ? '🎯' : '🔮';
-                      const isPast = entry.date < nowStr;
-                      return (
-                        <div key={`${entry.type}-${entry.id}-${idx}`} className="relative flex gap-3">
-                          <div className="absolute -left-5 w-6 h-6 flex items-center justify-center text-sm z-10 bg-dark-800 rounded-full">
-                            {marker}
-                          </div>
-                          <div className={`flex-1 p-3 rounded-lg border transition-colors ${
-                            isPast
-                              ? 'bg-dark-700/50 border-dark-500/50'
-                              : 'bg-dark-700 border-dark-500 hover:border-dark-400'
-                          }`}>
-                            <div className="flex items-center justify-between gap-2 flex-wrap">
-                              <span className={`text-sm font-medium ${isPast ? 'text-slate-400' : 'text-white'}`}>
-                                {entry.title}
-                              </span>
-                              <div className="flex items-center gap-2">
-                                <span className={`text-[10px] px-1.5 py-0.5 rounded capitalize ${
-                                  entry.type === 'event' ? 'bg-blue-500/20 text-blue-400' :
-                                  entry.type === 'milestone' ? 'bg-amber-500/20 text-amber-400' :
-                                  'bg-purple-500/20 text-purple-400'
-                                }`}>{entry.type}</span>
-                                <span className="text-xs text-slate-500">{formatDate(entry.date)}</span>
-                              </div>
-                            </div>
-                            {entry.description && (
-                              <p className="text-xs text-slate-500 mt-1 line-clamp-1">{entry.description}</p>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
+          {/* Event Type Breakdown */}
+          <div className="bg-dark-800 rounded-xl border border-dark-500 p-4">
+            <h3 className="text-sm font-semibold text-white mb-3">📊 Events by Type</h3>
+            <div className="space-y-2">
+              {(stats?.eventsByType || []).map((t, i) => (
+                <div key={i} className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm">{EVENT_TYPE_ICONS[t.event_type] || '📌'}</span>
+                    <span className="text-xs text-slate-300 capitalize">{t.event_type}</span>
                   </div>
+                  <span className="text-xs font-medium text-white">{t.count}</span>
                 </div>
-              </div>
+              ))}
             </div>
-          )}
+          </div>
         </div>
-      )}
+      </div>
 
-      {/* ── Upcoming Alerts ───────────────────────────────── */}
-      {activeSection === 'alerts' && (
-        <div className="card">
-          <h3 className="text-sm font-semibold text-white mb-4">Upcoming Events (Next 30 Days)</h3>
-          {upcomingEvents.length === 0 ? (
-            <p className="text-slate-500 text-sm text-center py-8">No upcoming events in the next 30 days</p>
-          ) : (
-            <div className="space-y-3">
-              {upcomingEvents.map(ev => {
-                const days = daysUntil(ev.start_date);
-                const impact = getImpactLabel(ev.impact_score);
-                return (
-                  <div
-                    key={ev.id}
-                    className="flex items-center gap-4 p-3 bg-dark-700 rounded-lg border border-dark-500 hover:border-dark-400 transition-colors cursor-pointer"
-                    onClick={() => openEditEvent(ev)}
-                  >
-                    <div className="w-10 h-10 rounded-lg flex items-center justify-center text-lg"
-                      style={{ backgroundColor: (EVENT_TYPE_COLORS[ev.event_type] || EVENT_TYPE_COLORS.default) + '20' }}>
-                      {EVENT_TYPE_DOTS[ev.event_type] || '⚪'}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-white truncate">{ev.title}</span>
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${impact.className}`}>{impact.label}</span>
-                      </div>
-                      <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5">
-                        <span className="capitalize">{ev.event_type}</span>
-                        <span>•</span>
-                        <span>{ev.region}</span>
-                        <span>•</span>
-                        <span>{formatDate(ev.start_date)}</span>
-                      </div>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <div className={`text-lg font-bold ${days <= 3 ? 'text-red-400' : days <= 7 ? 'text-yellow-400' : 'text-slate-300'}`}>
-                        {days}
-                      </div>
-                      <div className="text-[10px] text-slate-500">days</div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Patterns Panel ────────────────────────────────── */}
-      {activeSection === 'patterns' && (
-        <div className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {patterns.length === 0 ? (
-              <div className="col-span-2 card">
-                <p className="text-slate-500 text-sm text-center py-8">No seasonal patterns detected</p>
-              </div>
-            ) : patterns.map(p => {
-              const dataJson = parseSafeJson(p.data_json) as Record<string, unknown> | null;
-              let sparkData: Array<{ name: string; value: number }> = [];
-
-              if (dataJson) {
-                if (Array.isArray(dataJson.monthly)) {
-                  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-                  sparkData = (dataJson.monthly as number[]).map((v: number, i: number) => ({
-                    name: months[i] || `M${i + 1}`,
-                    value: v,
-                  }));
-                } else if (Array.isArray(dataJson.daily)) {
-                  sparkData = (dataJson.daily as string[]).map((d: string) => {
-                    const [name, val] = d.split(':');
-                    return { name, value: parseInt(val) || 0 };
-                  });
-                } else if (dataJson.quarterly && typeof dataJson.quarterly === 'object') {
-                  sparkData = Object.entries(dataJson.quarterly as Record<string, number>).map(([k, v]) => ({
-                    name: k,
-                    value: v,
-                  }));
-                } else if (Array.isArray(dataJson.weekly)) {
-                  sparkData = (dataJson.weekly as string[]).map((d: string) => {
-                    const [name, val] = d.split(':');
-                    return { name, value: parseInt(val) || 0 };
-                  });
-                }
-              }
-
+      {/* Timeline */}
+      <div className="bg-dark-800 rounded-xl border border-dark-500 p-4">
+        <h3 className="text-sm font-semibold text-white mb-4">📍 Timeline</h3>
+        <div className="overflow-x-auto pb-2">
+          <div className="flex gap-3 min-w-max">
+            {timeline.map((entry, i) => {
+              const isPast = entry.date < today;
               return (
-                <div key={p.id} className="card">
-                  <div className="flex items-start justify-between mb-3">
-                    <div>
-                      <h4 className="text-sm font-medium text-white">{p.name}</h4>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400 capitalize">{p.pattern_type}</span>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-dark-600 text-slate-400">{p.metric}</span>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <span className="text-xs text-slate-400">Confidence</span>
-                      <div className="text-sm font-bold text-white">{Math.round(p.confidence * 100)}%</div>
-                    </div>
+                <div
+                  key={`${entry.type}-${entry.id}-${i}`}
+                  className={`flex-shrink-0 w-48 p-3 rounded-lg border transition ${
+                    entry.type === 'prediction' ? 'border-purple-500/30 bg-purple-500/5' :
+                    entry.type === 'milestone' ? 'border-amber-500/30 bg-amber-500/5' :
+                    'border-dark-400 bg-dark-700'
+                  } ${isPast ? 'opacity-60' : ''}`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: entry.color || '#3b82f6' }} />
+                    <span className="text-[10px] font-medium text-slate-500">{formatDate(entry.date)}</span>
+                    {entry.type === 'prediction' && <span className="text-[9px] px-1 py-0.5 rounded bg-purple-500/20 text-purple-400">predicted</span>}
+                    {entry.type === 'milestone' && <span className="text-[9px] px-1 py-0.5 rounded bg-amber-500/20 text-amber-400">milestone</span>}
                   </div>
-
-                  {/* Confidence bar */}
-                  <div className="w-full bg-dark-600 rounded-full h-1.5 mb-3">
-                    <div
-                      className="h-1.5 rounded-full bg-gradient-to-r from-neon-cyan to-neon-purple"
-                      style={{ width: `${Math.round(p.confidence * 100)}%` }}
-                    />
+                  <div className="text-xs font-medium text-white truncate">{entry.title}</div>
+                  {entry.description && <div className="text-[10px] text-slate-500 mt-1 line-clamp-2">{entry.description}</div>}
+                  <div className="mt-2 flex items-center gap-1">
+                    <div className="flex-1 h-1 rounded-full bg-dark-600 overflow-hidden">
+                      <div className="h-full rounded-full" style={{ width: `${Math.min(100, entry.impact)}%`, backgroundColor: entry.color || '#3b82f6' }} />
+                    </div>
+                    <span className="text-[9px] text-slate-500">{entry.impact}</span>
                   </div>
-
-                  {/* Peak / Trough */}
-                  <div className="flex justify-between text-xs mb-3">
-                    <div>
-                      <span className="text-slate-500">Peak: </span>
-                      <span className="text-green-400">{formatMetricValue(p.peak_value, p.metric)} ({p.peak_period})</span>
-                    </div>
-                    <div>
-                      <span className="text-slate-500">Trough: </span>
-                      <span className="text-red-400">{formatMetricValue(p.trough_value, p.metric)} ({p.trough_period})</span>
-                    </div>
-                  </div>
-
-                  {/* Sparkline */}
-                  {sparkData.length > 0 && (
-                    <div className="h-16 mt-2">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart data={sparkData} margin={{ top: 0, right: 0, bottom: 0, left: 0 }}>
-                          <defs>
-                            <linearGradient id={`grad-${p.id}`} x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="0%" stopColor="#06b6d4" stopOpacity={0.3} />
-                              <stop offset="100%" stopColor="#06b6d4" stopOpacity={0} />
-                            </linearGradient>
-                          </defs>
-                          <Area type="monotone" dataKey="value" stroke="#06b6d4" fill={`url(#grad-${p.id})`} strokeWidth={1.5} />
-                          <ReTooltip
-                            contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px', fontSize: '11px' }}
-                            labelStyle={{ color: '#94a3b8' }}
-                            itemStyle={{ color: '#06b6d4' }}
-                          />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    </div>
-                  )}
-
-                  {p.description && (
-                    <p className="text-xs text-slate-500 mt-2 line-clamp-2">{p.description}</p>
-                  )}
-                  <div className="text-[10px] text-slate-600 mt-1">Sample size: {p.sample_size}</div>
                 </div>
               );
             })}
+            {timeline.length === 0 && (
+              <div className="text-xs text-slate-500 py-4">No timeline entries yet. Add events or run detection.</div>
+            )}
           </div>
         </div>
-      )}
+      </div>
 
-      {/* ── Milestones Log ────────────────────────────────── */}
-      {activeSection === 'milestones' && (
-        <div className="card">
-          <h3 className="text-sm font-semibold text-white mb-4">Engagement Milestones</h3>
-          {milestones.length === 0 ? (
-            <p className="text-slate-500 text-sm text-center py-8">No milestones recorded</p>
+      {/* Bottom Grid: Patterns + Milestones */}
+      <div className="grid grid-cols-2 gap-6">
+        {/* Patterns Panel */}
+        <div className="bg-dark-800 rounded-xl border border-dark-500 p-4">
+          <h3 className="text-sm font-semibold text-white mb-4">🔄 Seasonal Patterns</h3>
+          {patterns.length === 0 ? (
+            <p className="text-xs text-slate-500">No patterns detected yet. Run the pattern detector.</p>
           ) : (
             <div className="space-y-3">
-              {milestones.map(m => {
-                const changePct = m.previous_value > 0
-                  ? ((m.value - m.previous_value) / m.previous_value * 100)
-                  : 0;
-                const isUp = changePct > 0;
-                return (
-                  <div key={m.id} className="flex items-center gap-4 p-3 bg-dark-700 rounded-lg border border-dark-500">
-                    <div className="w-10 h-10 rounded-lg flex items-center justify-center text-lg bg-amber-500/10">
-                      {m.milestone_type === 'threshold' ? '📊' : m.milestone_type === 'spike' ? '📈' : '🏆'}
+              {patterns.map(p => (
+                <div key={p.id} className="p-3 rounded-lg bg-dark-700 border border-dark-500">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-medium text-white">{p.name}</span>
+                    <ConfidenceBadge confidence={p.confidence} />
+                  </div>
+                  {p.description && <p className="text-[10px] text-slate-500 mb-2">{p.description}</p>}
+                  <div className="grid grid-cols-3 gap-2 text-[10px]">
+                    <div>
+                      <span className="text-slate-500">Baseline</span>
+                      <div className="text-slate-300 font-medium">{p.baseline.toLocaleString()}</div>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-sm font-medium text-white truncate">{m.title}</span>
-                        {changePct !== 0 && (
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
-                            isUp ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
-                          }`}>
-                            {isUp ? '▲' : '▼'} {Math.abs(changePct).toFixed(1)}%
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5 flex-wrap">
-                        <span className="capitalize">{m.entity_type || 'unknown'}</span>
-                        <span>•</span>
-                        <span>{m.entity_name}</span>
-                        <span>•</span>
-                        <span className="capitalize">{m.milestone_type}</span>
-                        {m.event_title && (
-                          <>
-                            <span>•</span>
-                            <span className="text-neon-cyan">🔗 {m.event_title}</span>
-                          </>
-                        )}
-                      </div>
+                    <div>
+                      <span className="text-green-500">Peak</span>
+                      <div className="text-green-400 font-medium">{p.peak_value.toLocaleString()}</div>
+                      <div className="text-slate-600">{p.peak_period}</div>
                     </div>
-                    <div className="text-right shrink-0">
-                      <div className="text-sm font-bold text-white">
-                        {formatMetricValue(m.value, m.metric || '')}
-                      </div>
-                      <div className="text-[10px] text-slate-500">{m.metric}</div>
+                    <div>
+                      <span className="text-red-500">Trough</span>
+                      <div className="text-red-400 font-medium">{p.trough_value.toLocaleString()}</div>
+                      <div className="text-slate-600">{p.trough_period}</div>
                     </div>
                   </div>
-                );
-              })}
+                  <div className="flex items-center gap-2 mt-2 text-[10px] text-slate-500">
+                    <span className="capitalize">{p.pattern_type}</span>
+                    <span>•</span>
+                    <span>{p.metric}</span>
+                    <span>•</span>
+                    <span>{p.sample_size} samples</span>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
-      )}
 
-      {/* ── Predictions Summary ───────────────────────────── */}
-      {predictions.length > 0 && (
-        <div className="card">
-          <h3 className="text-sm font-semibold text-white mb-4">🔮 Predictions</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {predictions.slice(0, 6).map((pred, idx) => (
-              <div key={idx} className="p-3 bg-dark-700 rounded-lg border border-purple-500/20">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs">{pred.type === 'event_based' ? '📅' : '🔄'}</span>
-                  <span className="text-sm font-medium text-white truncate">{pred.event_title}</span>
-                </div>
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-400">{formatDate(pred.predicted_date)}</span>
-                  <span className="text-purple-400">{Math.round(pred.confidence * 100)}% conf.</span>
-                </div>
-                <p className="text-[10px] text-slate-500 mt-1 line-clamp-1">{pred.basis}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ── Event Editor Modal ────────────────────────────── */}
-      {modalOpen && editingEvent && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] p-4" onClick={() => setModalOpen(false)}>
-          <div className="bg-dark-800 border border-dark-500 rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-            <div className="p-6">
-              <h2 className="text-lg font-semibold text-white mb-4">
-                {editingEvent.id ? 'Edit Event' : 'New Event'}
-              </h2>
-
-              <div className="space-y-4">
-                {/* Name */}
-                <div>
-                  <label className="text-xs text-slate-400 mb-1 block">Event Name *</label>
-                  <input
-                    type="text"
-                    value={editingEvent.title || ''}
-                    onChange={e => setEditingEvent({ ...editingEvent, title: e.target.value })}
-                    className="w-full px-3 py-2 bg-dark-700 border border-dark-500 rounded-lg text-white text-sm focus:border-neon-cyan focus:outline-none"
-                    placeholder="Event name"
-                  />
-                </div>
-
-                {/* Type + Category row */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-xs text-slate-400 mb-1 block">Type</label>
-                    <select
-                      value={editingEvent.event_type || 'holiday'}
-                      onChange={e => setEditingEvent({ ...editingEvent, event_type: e.target.value })}
-                      className="w-full px-3 py-2 bg-dark-700 border border-dark-500 rounded-lg text-white text-sm focus:border-neon-cyan focus:outline-none"
-                    >
-                      <option value="holiday">Holiday</option>
-                      <option value="gaming">Gaming Event</option>
-                      <option value="sales">Sales</option>
-                      <option value="conference">Conference</option>
-                      <option value="seasonal">Seasonal</option>
-                    </select>
+        {/* Milestones Log */}
+        <div className="bg-dark-800 rounded-xl border border-dark-500 p-4">
+          <h3 className="text-sm font-semibold text-white mb-4">🏆 Engagement Milestones</h3>
+          {milestones.length === 0 ? (
+            <p className="text-xs text-slate-500">No milestones detected yet. Run the milestone tracker.</p>
+          ) : (
+            <div className="space-y-2">
+              {milestones.map(m => (
+                <div key={m.id} className="p-3 rounded-lg bg-dark-700 border border-dark-500">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span>{MILESTONE_TYPE_ICONS[m.milestone_type] || '📌'}</span>
+                    <span className="text-xs font-medium text-white flex-1 truncate">{m.title}</span>
+                    <span className="text-[10px] text-slate-500">{formatDate(m.detected_at.slice(0, 10))}</span>
                   </div>
-                  <div>
-                    <label className="text-xs text-slate-400 mb-1 block">Region</label>
-                    <input
-                      type="text"
-                      value={editingEvent.region || 'global'}
-                      onChange={e => setEditingEvent({ ...editingEvent, region: e.target.value })}
-                      className="w-full px-3 py-2 bg-dark-700 border border-dark-500 rounded-lg text-white text-sm focus:border-neon-cyan focus:outline-none"
-                      placeholder="global"
-                    />
+                  {m.description && <p className="text-[10px] text-slate-500 mb-1">{m.description}</p>}
+                  <div className="flex items-center gap-3 text-[10px]">
+                    {m.entity_type && m.entity_name && (
+                      <span className="px-1.5 py-0.5 rounded bg-dark-600 text-slate-400">
+                        {m.entity_type}: {m.entity_name}
+                      </span>
+                    )}
+                    {m.metric && (
+                      <span className="text-slate-500">{m.metric}: {m.value.toLocaleString()}</span>
+                    )}
+                    <span className="ml-auto"><SignificanceBadge value={m.significance} /></span>
                   </div>
-                </div>
-
-                {/* Dates row */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-xs text-slate-400 mb-1 block">Start Date *</label>
-                    <input
-                      type="date"
-                      value={editingEvent.start_date || ''}
-                      onChange={e => setEditingEvent({ ...editingEvent, start_date: e.target.value })}
-                      className="w-full px-3 py-2 bg-dark-700 border border-dark-500 rounded-lg text-white text-sm focus:border-neon-cyan focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-slate-400 mb-1 block">End Date</label>
-                    <input
-                      type="date"
-                      value={editingEvent.end_date || ''}
-                      onChange={e => setEditingEvent({ ...editingEvent, end_date: e.target.value })}
-                      className="w-full px-3 py-2 bg-dark-700 border border-dark-500 rounded-lg text-white text-sm focus:border-neon-cyan focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                {/* Impact + Recurrence */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-xs text-slate-400 mb-1 block">Impact Score (0-100)</label>
-                    <input
-                      type="number"
-                      min={0} max={100}
-                      value={editingEvent.impact_score ?? 50}
-                      onChange={e => setEditingEvent({ ...editingEvent, impact_score: parseInt(e.target.value) || 0 })}
-                      className="w-full px-3 py-2 bg-dark-700 border border-dark-500 rounded-lg text-white text-sm focus:border-neon-cyan focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-slate-400 mb-1 block">Recurrence</label>
-                    <select
-                      value={editingEvent.recurrence || 'once'}
-                      onChange={e => setEditingEvent({ ...editingEvent, recurrence: e.target.value })}
-                      className="w-full px-3 py-2 bg-dark-700 border border-dark-500 rounded-lg text-white text-sm focus:border-neon-cyan focus:outline-none"
-                    >
-                      <option value="once">Once</option>
-                      <option value="weekly">Weekly</option>
-                      <option value="monthly">Monthly</option>
-                      <option value="quarterly">Quarterly</option>
-                      <option value="yearly">Yearly</option>
-                    </select>
-                  </div>
-                </div>
-
-                {/* Description */}
-                <div>
-                  <label className="text-xs text-slate-400 mb-1 block">Description</label>
-                  <textarea
-                    value={editingEvent.description || ''}
-                    onChange={e => setEditingEvent({ ...editingEvent, description: e.target.value })}
-                    className="w-full px-3 py-2 bg-dark-700 border border-dark-500 rounded-lg text-white text-sm focus:border-neon-cyan focus:outline-none h-20 resize-none"
-                    placeholder="Event description..."
-                  />
-                </div>
-
-                {/* Tags */}
-                <div>
-                  <label className="text-xs text-slate-400 mb-1 block">Tags (comma separated)</label>
-                  <input
-                    type="text"
-                    value={(() => {
-                      try {
-                        const tags = JSON.parse(editingEvent.tags || '[]');
-                        return Array.isArray(tags) ? tags.join(', ') : '';
-                      } catch { return ''; }
-                    })()}
-                    onChange={e => setEditingEvent({
-                      ...editingEvent,
-                      tags: JSON.stringify(e.target.value.split(',').map(t => t.trim()).filter(Boolean)),
-                    })}
-                    className="w-full px-3 py-2 bg-dark-700 border border-dark-500 rounded-lg text-white text-sm focus:border-neon-cyan focus:outline-none"
-                    placeholder="tag1, tag2, tag3"
-                  />
-                </div>
-              </div>
-
-              {/* Buttons */}
-              <div className="flex items-center justify-between mt-6 pt-4 border-t border-dark-500">
-                <div>
-                  {editingEvent.id && (
-                    <button
-                      onClick={deleteEvent}
-                      className="px-4 py-2 text-sm text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
-                    >
-                      Delete
-                    </button>
+                  {m.event_title && (
+                    <div className="mt-1 text-[10px] text-purple-400">
+                      🔗 Linked to: {m.event_title} ({m.event_date ? formatDate(m.event_date) : 'N/A'})
+                    </div>
                   )}
                 </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => { setModalOpen(false); setEditingEvent(null); }}
-                    className="px-4 py-2 text-sm text-slate-400 hover:text-white bg-dark-700 rounded-lg transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={saveEvent}
-                    disabled={!editingEvent.title || !editingEvent.start_date}
-                    className="px-4 py-2 text-sm text-white bg-gradient-to-r from-neon-cyan to-neon-purple rounded-lg font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
-                  >
-                    {editingEvent.id ? 'Update' : 'Create'}
-                  </button>
-                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Event Editor Modal */}
+      {modalOpen && editingEvent && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setModalOpen(false)}>
+          <div className="bg-dark-800 border border-dark-500 rounded-xl w-full max-w-lg p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-white mb-4">{editingEvent.id ? 'Edit Event' : 'Create Event'}</h3>
+            <div className="space-y-3">
+              <ModalField label="Title" value={editingEvent.title || ''} onChange={v => setEditingEvent({ ...editingEvent, title: v })} />
+              <ModalField label="Description" value={editingEvent.description || ''} onChange={v => setEditingEvent({ ...editingEvent, description: v })} textarea />
+              <div className="grid grid-cols-2 gap-3">
+                <ModalField label="Start Date" value={editingEvent.start_date || ''} onChange={v => setEditingEvent({ ...editingEvent, start_date: v })} type="date" />
+                <ModalField label="End Date" value={editingEvent.end_date || ''} onChange={v => setEditingEvent({ ...editingEvent, end_date: v })} type="date" />
               </div>
+              <div className="grid grid-cols-3 gap-3">
+                <ModalSelect label="Type" value={editingEvent.event_type || 'holiday'} onChange={v => setEditingEvent({ ...editingEvent, event_type: v })} options={['holiday', 'conference', 'sale', 'cultural', 'gaming', 'school']} />
+                <ModalSelect label="Recurrence" value={editingEvent.recurrence || 'once'} onChange={v => setEditingEvent({ ...editingEvent, recurrence: v })} options={['once', 'weekly', 'monthly', 'quarterly', 'yearly']} />
+                <ModalField label="Region" value={editingEvent.region || 'global'} onChange={v => setEditingEvent({ ...editingEvent, region: v })} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-slate-400 mb-1 block">Impact Score ({editingEvent.impact_score || 50})</label>
+                  <input
+                    type="range" min="0" max="100" step="5"
+                    value={editingEvent.impact_score || 50}
+                    onChange={e => setEditingEvent({ ...editingEvent, impact_score: parseInt(e.target.value) })}
+                    className="w-full accent-neon-cyan"
+                  />
+                </div>
+                <ModalField label="Color" value={editingEvent.color || '#3b82f6'} onChange={v => setEditingEvent({ ...editingEvent, color: v })} type="color" />
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 mt-6">
+              <button onClick={() => { setModalOpen(false); setEditingEvent(null); }} className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-white transition">Cancel</button>
+              <button onClick={handleSaveEvent} className="px-4 py-2 rounded-lg text-sm bg-neon-cyan/20 text-neon-cyan font-medium hover:bg-neon-cyan/30 transition">
+                {editingEvent.id ? 'Save Changes' : 'Create Event'}
+              </button>
             </div>
           </div>
         </div>
@@ -1003,33 +649,81 @@ export default function CalendarPage() {
   );
 }
 
-// ── Sub Components ───────────────────────────────────────────
+// ── Sub-components ──────────────────────────────────────────────
 
-function StatCard({ label, value, sub, gradient, icon, isText }: {
-  label: string; value: string | number; sub: string; gradient: string; icon: string; isText?: boolean;
-}) {
+function StatCard({ title, value, subtitle, icon, color }: { title: string; value: string | number; subtitle: string; icon: string; color: string }) {
+  const colorClasses: Record<string, string> = {
+    cyan: 'text-neon-cyan border-neon-cyan/20',
+    purple: 'text-purple-400 border-purple-500/20',
+    amber: 'text-amber-400 border-amber-500/20',
+    green: 'text-green-400 border-green-500/20',
+  };
   return (
-    <div className="card relative overflow-hidden">
-      <div className={`absolute inset-0 bg-gradient-to-br ${gradient} opacity-5`} />
-      <div className="relative">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs text-slate-400 font-medium">{label}</span>
-          <span className="text-lg">{icon}</span>
-        </div>
-        <div className={`font-bold ${isText ? 'text-lg' : 'text-2xl'} text-white`}>
-          {value}
-        </div>
-        <p className="text-xs text-slate-500 mt-1">{sub}</p>
+    <div className={`bg-dark-800 rounded-xl border p-4 ${colorClasses[color] || 'border-dark-500'}`}>
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-lg">{icon}</span>
+        <span className="text-xs text-slate-400">{title}</span>
       </div>
+      <div className="text-2xl font-bold text-white">{value}</div>
+      <div className="text-xs text-slate-500 mt-1">{subtitle}</div>
     </div>
   );
 }
 
-function QuickStat({ label, value }: { label: string; value: number | string }) {
+function ImpactBadge({ score }: { score: number }) {
+  const color = score >= 80 ? 'text-red-400 bg-red-500/20' : score >= 60 ? 'text-amber-400 bg-amber-500/20' : 'text-slate-400 bg-dark-600';
+  return <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${color}`}>{score}</span>;
+}
+
+function ConfidenceBadge({ confidence }: { confidence: number }) {
+  const pct = Math.round(confidence * 100);
+  const color = pct >= 80 ? 'text-green-400 bg-green-500/20' : pct >= 50 ? 'text-amber-400 bg-amber-500/20' : 'text-slate-400 bg-dark-600';
+  return <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${color}`}>{pct}%</span>;
+}
+
+function SignificanceBadge({ value }: { value: number }) {
+  const color = value >= 80 ? 'text-red-400' : value >= 60 ? 'text-amber-400' : 'text-slate-400';
+  return <span className={`text-[10px] font-medium ${color}`}>⚡ {Math.round(value)}</span>;
+}
+
+function ModalField({ label, value, onChange, type, textarea }: {
+  label: string; value: string; onChange: (v: string) => void; type?: string; textarea?: boolean;
+}) {
   return (
-    <div className="flex items-center justify-between py-1.5 px-2 bg-dark-700 rounded-lg">
-      <span className="text-xs text-slate-400">{label}</span>
-      <span className="text-sm font-bold text-white">{value}</span>
+    <div>
+      <label className="text-xs text-slate-400 mb-1 block">{label}</label>
+      {textarea ? (
+        <textarea
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          rows={2}
+          className="w-full bg-dark-700 border border-dark-500 rounded-lg px-3 py-2 text-sm text-white focus:border-neon-cyan focus:outline-none resize-none"
+        />
+      ) : (
+        <input
+          type={type || 'text'}
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          className="w-full bg-dark-700 border border-dark-500 rounded-lg px-3 py-2 text-sm text-white focus:border-neon-cyan focus:outline-none"
+        />
+      )}
+    </div>
+  );
+}
+
+function ModalSelect({ label, value, onChange, options }: {
+  label: string; value: string; onChange: (v: string) => void; options: string[];
+}) {
+  return (
+    <div>
+      <label className="text-xs text-slate-400 mb-1 block">{label}</label>
+      <select
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        className="w-full bg-dark-700 border border-dark-500 rounded-lg px-3 py-2 text-sm text-white focus:border-neon-cyan focus:outline-none"
+      >
+        {options.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
     </div>
   );
 }
