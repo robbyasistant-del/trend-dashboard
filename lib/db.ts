@@ -305,6 +305,65 @@ function initTables(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_store_categories_slug ON store_categories(slug);
   `);
 
+  // ── Region Analysis tables ──────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS region_metrics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      trend_count INTEGER DEFAULT 0,
+      avg_viral_score REAL DEFAULT 0,
+      app_count INTEGER DEFAULT 0,
+      forum_activity INTEGER DEFAULT 0,
+      word_velocity REAL DEFAULT 0,
+      total_mentions INTEGER DEFAULT 0,
+      top_category TEXT,
+      period TEXT DEFAULT 'daily',
+      period_start DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(code, period, period_start)
+    );
+
+    CREATE TABLE IF NOT EXISTS region_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      region_code TEXT NOT NULL,
+      trend_count INTEGER DEFAULT 0,
+      avg_viral_score REAL DEFAULT 0,
+      app_count INTEGER DEFAULT 0,
+      forum_activity INTEGER DEFAULT 0,
+      word_velocity REAL DEFAULT 0,
+      recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS geo_trend_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trend_id INTEGER REFERENCES trends(id) ON DELETE CASCADE,
+      region_code TEXT NOT NULL,
+      relevance_score REAL DEFAULT 1.0,
+      detected_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(trend_id, region_code)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_region_metrics_code ON region_metrics(code);
+    CREATE INDEX IF NOT EXISTS idx_region_metrics_period ON region_metrics(period);
+    CREATE INDEX IF NOT EXISTS idx_region_metrics_code_period ON region_metrics(code, period);
+    CREATE INDEX IF NOT EXISTS idx_region_snapshots_code ON region_snapshots(region_code);
+    CREATE INDEX IF NOT EXISTS idx_region_snapshots_recorded_at ON region_snapshots(recorded_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_geo_trend_links_trend_id ON geo_trend_links(trend_id);
+    CREATE INDEX IF NOT EXISTS idx_geo_trend_links_region_code ON geo_trend_links(region_code);
+  `);
+
+  // Migration: add region columns to tables that lack them
+  try { db.prepare("SELECT region FROM forum_posts LIMIT 0").run(); }
+  catch { db.exec("ALTER TABLE forum_posts ADD COLUMN region TEXT DEFAULT 'global'"); }
+
+  try { db.prepare("SELECT region FROM app_entries LIMIT 0").run(); }
+  catch { db.exec("ALTER TABLE app_entries ADD COLUMN region TEXT DEFAULT 'global'"); }
+
+  try { db.prepare("SELECT region FROM word_entries LIMIT 0").run(); }
+  catch { db.exec("ALTER TABLE word_entries ADD COLUMN region TEXT DEFAULT 'global'"); }
+
   // Migration: add target_dashboard column if missing (for existing DBs)
   try {
     db.prepare("SELECT target_dashboard FROM cron_configs LIMIT 0").run();
@@ -1160,4 +1219,294 @@ export function getAppStoreComparison(appName: string) {
     WHERE ae.name = ?
     ORDER BY ae.store ASC
   `).all(appName) as Array<Record<string, unknown>>;
+}
+
+// ── Region Analysis helpers ──────────────────────────────────
+
+const REGION_NAMES: Record<string, string> = {
+  US: 'United States', GB: 'United Kingdom', DE: 'Germany', FR: 'France', JP: 'Japan',
+  KR: 'South Korea', CN: 'China', BR: 'Brazil', IN: 'India', CA: 'Canada',
+  AU: 'Australia', MX: 'Mexico', ES: 'Spain', IT: 'Italy', RU: 'Russia',
+  TR: 'Turkey', ID: 'Indonesia', TH: 'Thailand', VN: 'Vietnam', PH: 'Philippines',
+  PL: 'Poland', NL: 'Netherlands', SE: 'Sweden', NO: 'Norway', FI: 'Finland',
+  DK: 'Denmark', AR: 'Argentina', CO: 'Colombia', CL: 'Chile', PE: 'Peru',
+  ZA: 'South Africa', NG: 'Nigeria', EG: 'Egypt', SA: 'Saudi Arabia', AE: 'UAE',
+  SG: 'Singapore', MY: 'Malaysia', TW: 'Taiwan', HK: 'Hong Kong', IL: 'Israel',
+  PT: 'Portugal', AT: 'Austria', CH: 'Switzerland', BE: 'Belgium', IE: 'Ireland',
+  NZ: 'New Zealand', CZ: 'Czech Republic', RO: 'Romania', UA: 'Ukraine', PK: 'Pakistan',
+};
+
+export function getRegionName(code: string): string {
+  return REGION_NAMES[code] || code;
+}
+
+export function getRegions(opts?: { period?: string; search?: string; limit?: number; offset?: number }) {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.period) { conditions.push('period = @period'); params.period = opts.period; }
+  if (opts?.search) { conditions.push('(name LIKE @search OR code LIKE @search)'); params.search = '%' + opts.search + '%'; }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const limit = opts?.limit || 100;
+  const offset = opts?.offset || 0;
+
+  return db.prepare(`SELECT * FROM region_metrics ${where} ORDER BY avg_viral_score DESC, trend_count DESC LIMIT @limit OFFSET @offset`).all({ ...params, limit, offset });
+}
+
+export function getRegionStats() {
+  const db = getDb();
+  const totalRegions = db.prepare('SELECT COUNT(DISTINCT code) as count FROM region_metrics').get() as { count: number };
+  const totalTrends = db.prepare("SELECT COALESCE(SUM(trend_count), 0) as total FROM region_metrics WHERE period = 'daily'").get() as { total: number };
+  const avgViral = db.prepare("SELECT AVG(avg_viral_score) as avg FROM region_metrics WHERE period = 'daily'").get() as { avg: number };
+  const topRegion = db.prepare("SELECT code, name, avg_viral_score FROM region_metrics WHERE period = 'daily' ORDER BY avg_viral_score DESC LIMIT 1").get() as { code: string; name: string; avg_viral_score: number } | undefined;
+  const topByApps = db.prepare("SELECT code, name, app_count FROM region_metrics WHERE period = 'daily' ORDER BY app_count DESC LIMIT 1").get() as { code: string; name: string; app_count: number } | undefined;
+  const topByForum = db.prepare("SELECT code, name, forum_activity FROM region_metrics WHERE period = 'daily' ORDER BY forum_activity DESC LIMIT 1").get() as { code: string; name: string; forum_activity: number } | undefined;
+
+  return {
+    totalRegions: totalRegions.count,
+    totalTrends: totalTrends.total,
+    avgViralScore: Math.round((avgViral.avg || 0) * 100) / 100,
+    topRegion: topRegion || null,
+    topByApps: topByApps || null,
+    topByForum: topByForum || null,
+  };
+}
+
+export function getMapData(opts?: { metric?: string; period?: string }) {
+  const db = getDb();
+  const period = opts?.period || 'daily';
+  const rows = db.prepare('SELECT code, name, trend_count, avg_viral_score, app_count, forum_activity, word_velocity, total_mentions FROM region_metrics WHERE period = @period ORDER BY avg_viral_score DESC').all({ period }) as Array<Record<string, unknown>>;
+
+  const metric = opts?.metric || 'avg_viral_score';
+  let maxVal = 1;
+  for (const r of rows) {
+    const v = (r[metric] as number) || 0;
+    if (v > maxVal) maxVal = v;
+  }
+
+  return rows.map(r => ({
+    code: r.code as string,
+    name: r.name as string,
+    value: (r[metric] as number) || 0,
+    normalized: ((r[metric] as number) || 0) / maxVal,
+    trend_count: r.trend_count as number,
+    avg_viral_score: r.avg_viral_score as number,
+    app_count: r.app_count as number,
+    forum_activity: r.forum_activity as number,
+    word_velocity: r.word_velocity as number,
+    total_mentions: r.total_mentions as number,
+  }));
+}
+
+export function compareRegions(codes: string[]) {
+  const db = getDb();
+  if (!codes.length) return [];
+  const placeholders = codes.map(() => '?').join(',');
+  return db.prepare(`SELECT * FROM region_metrics WHERE code IN (${placeholders}) AND period = 'daily' ORDER BY avg_viral_score DESC`).all(...codes);
+}
+
+export function getRegionDetail(code: string) {
+  const db = getDb();
+  const metrics = db.prepare("SELECT * FROM region_metrics WHERE code = @code AND period = 'daily' LIMIT 1").get({ code }) as Record<string, unknown> | undefined;
+  const snapshots = db.prepare('SELECT * FROM region_snapshots WHERE region_code = @code ORDER BY recorded_at DESC LIMIT 30').all({ code });
+  const linkedTrendIds = db.prepare('SELECT trend_id, relevance_score FROM geo_trend_links WHERE region_code = @code ORDER BY relevance_score DESC LIMIT 20').all({ code }) as Array<{ trend_id: number; relevance_score: number }>;
+
+  let trends;
+  if (linkedTrendIds.length > 0) {
+    const ids = linkedTrendIds.map(l => l.trend_id);
+    const ph = ids.map(() => '?').join(',');
+    trends = db.prepare(`SELECT * FROM trends WHERE id IN (${ph}) ORDER BY viral_score DESC`).all(...ids);
+  } else {
+    trends = db.prepare('SELECT * FROM trends WHERE region = @code ORDER BY viral_score DESC LIMIT 20').all({ code });
+  }
+
+  // Get top words for this region
+  let words: unknown[] = [];
+  try {
+    words = db.prepare('SELECT * FROM word_entries WHERE region = @code ORDER BY score DESC LIMIT 10').all({ code });
+  } catch { /* region column may not exist */ }
+
+  // Get forum posts for this region
+  let forumPosts: unknown[] = [];
+  try {
+    forumPosts = db.prepare('SELECT * FROM forum_posts WHERE region = @code ORDER BY score DESC LIMIT 10').all({ code });
+  } catch { /* region column may not exist */ }
+
+  // Get apps for this region
+  let apps: unknown[] = [];
+  try {
+    apps = db.prepare('SELECT * FROM app_entries WHERE region = @code ORDER BY downloads DESC LIMIT 10').all({ code });
+  } catch { /* region column may not exist */ }
+
+  return { metrics: metrics || null, snapshots, trends, words, forumPosts, apps };
+}
+
+export function getRegionTrends(code: string, opts?: { limit?: number; offset?: number }) {
+  const db = getDb();
+  const limit = opts?.limit || 50;
+  const offset = opts?.offset || 0;
+
+  const linked = db.prepare(`
+    SELECT t.*, gtl.relevance_score FROM geo_trend_links gtl
+    JOIN trends t ON gtl.trend_id = t.id
+    WHERE gtl.region_code = @code
+    ORDER BY t.viral_score DESC
+    LIMIT @limit OFFSET @offset
+  `).all({ code, limit, offset });
+
+  if (linked.length > 0) return linked;
+
+  return db.prepare('SELECT * FROM trends WHERE region = @code ORDER BY viral_score DESC LIMIT @limit OFFSET @offset').all({ code, limit, offset });
+}
+
+export function rebuildRegionMetrics(): { regionsProcessed: number; snapshotsCreated: number } {
+  const db = getDb();
+  let regionsProcessed = 0;
+  let snapshotsCreated = 0;
+
+  const transaction = db.transaction(() => {
+    // Clear current daily metrics
+    db.prepare("DELETE FROM region_metrics WHERE period = 'daily'").run();
+
+    // Aggregate from trends table (primary source — has region column)
+    const trendsByRegion = db.prepare(`
+      SELECT region as code,
+        COUNT(*) as trend_count,
+        AVG(viral_score) as avg_viral_score,
+        COALESCE(SUM(mentions), 0) as total_mentions,
+        (SELECT category FROM trends t2 WHERE t2.region = trends.region GROUP BY category ORDER BY COUNT(*) DESC LIMIT 1) as top_category
+      FROM trends
+      WHERE region IS NOT NULL AND region != '' AND region != 'global'
+      GROUP BY region
+    `).all() as Array<{ code: string; trend_count: number; avg_viral_score: number; total_mentions: number; top_category: string }>;
+
+    // Build aggregation map
+    const regionMap = new Map<string, { trend_count: number; avg_viral_score: number; app_count: number; forum_activity: number; word_velocity: number; total_mentions: number; top_category: string }>();
+
+    for (const r of trendsByRegion) {
+      regionMap.set(r.code, {
+        trend_count: r.trend_count,
+        avg_viral_score: r.avg_viral_score || 0,
+        app_count: 0,
+        forum_activity: 0,
+        word_velocity: 0,
+        total_mentions: r.total_mentions || 0,
+        top_category: r.top_category || 'general',
+      });
+    }
+
+    // Aggregate forum_posts by region (column added via migration)
+    try {
+      const forumByRegion = db.prepare(`
+        SELECT region as code, COUNT(*) as count
+        FROM forum_posts
+        WHERE region IS NOT NULL AND region != '' AND region != 'global'
+        GROUP BY region
+      `).all() as Array<{ code: string; count: number }>;
+
+      for (const f of forumByRegion) {
+        const existing = regionMap.get(f.code);
+        if (existing) {
+          existing.forum_activity = f.count;
+        } else {
+          regionMap.set(f.code, { trend_count: 0, avg_viral_score: 0, app_count: 0, forum_activity: f.count, word_velocity: 0, total_mentions: 0, top_category: 'general' });
+        }
+      }
+    } catch { /* column may not exist in older DBs */ }
+
+    // Aggregate app_entries by region
+    try {
+      const appsByRegion = db.prepare(`
+        SELECT region as code, COUNT(*) as count
+        FROM app_entries
+        WHERE region IS NOT NULL AND region != '' AND region != 'global'
+        GROUP BY region
+      `).all() as Array<{ code: string; count: number }>;
+
+      for (const a of appsByRegion) {
+        const existing = regionMap.get(a.code);
+        if (existing) {
+          existing.app_count = a.count;
+        } else {
+          regionMap.set(a.code, { trend_count: 0, avg_viral_score: 0, app_count: a.count, forum_activity: 0, word_velocity: 0, total_mentions: 0, top_category: 'general' });
+        }
+      }
+    } catch { /* column may not exist in older DBs */ }
+
+    // Aggregate word_entries by region
+    try {
+      const wordsByRegion = db.prepare(`
+        SELECT region as code, AVG(growth) as avg_growth
+        FROM word_entries
+        WHERE region IS NOT NULL AND region != '' AND region != 'global'
+        GROUP BY region
+      `).all() as Array<{ code: string; avg_growth: number }>;
+
+      for (const w of wordsByRegion) {
+        const existing = regionMap.get(w.code);
+        if (existing) {
+          existing.word_velocity = w.avg_growth || 0;
+        } else {
+          regionMap.set(w.code, { trend_count: 0, avg_viral_score: 0, app_count: 0, forum_activity: 0, word_velocity: w.avg_growth || 0, total_mentions: 0, top_category: 'general' });
+        }
+      }
+    } catch { /* column may not exist in older DBs */ }
+
+    // Insert metrics and snapshots
+    const insertMetrics = db.prepare(`
+      INSERT OR REPLACE INTO region_metrics (code, name, trend_count, avg_viral_score, app_count, forum_activity, word_velocity, total_mentions, top_category, period, period_start)
+      VALUES (@code, @name, @trend_count, @avg_viral_score, @app_count, @forum_activity, @word_velocity, @total_mentions, @top_category, 'daily', datetime('now'))
+    `);
+
+    const insertSnapshot = db.prepare(`
+      INSERT INTO region_snapshots (region_code, trend_count, avg_viral_score, app_count, forum_activity, word_velocity)
+      VALUES (@region_code, @trend_count, @avg_viral_score, @app_count, @forum_activity, @word_velocity)
+    `);
+
+    for (const [code, data] of regionMap) {
+      const name = REGION_NAMES[code] || code;
+      insertMetrics.run({
+        code,
+        name,
+        trend_count: data.trend_count,
+        avg_viral_score: Math.round(data.avg_viral_score * 100) / 100,
+        app_count: data.app_count,
+        forum_activity: data.forum_activity,
+        word_velocity: Math.round(data.word_velocity * 100) / 100,
+        total_mentions: data.total_mentions,
+        top_category: data.top_category,
+      });
+      regionsProcessed++;
+
+      insertSnapshot.run({
+        region_code: code,
+        trend_count: data.trend_count,
+        avg_viral_score: Math.round(data.avg_viral_score * 100) / 100,
+        app_count: data.app_count,
+        forum_activity: data.forum_activity,
+        word_velocity: Math.round(data.word_velocity * 100) / 100,
+      });
+      snapshotsCreated++;
+    }
+  });
+
+  transaction();
+  return { regionsProcessed, snapshotsCreated };
+}
+
+export function upsertGeoTrendLink(data: { trend_id: number; region_code: string; relevance_score?: number }) {
+  const db = getDb();
+  return db.prepare(`
+    INSERT INTO geo_trend_links (trend_id, region_code, relevance_score)
+    VALUES (@trend_id, @region_code, @relevance_score)
+    ON CONFLICT(trend_id, region_code) DO UPDATE SET
+      relevance_score = @relevance_score,
+      detected_at = CURRENT_TIMESTAMP
+  `).run({
+    trend_id: data.trend_id,
+    region_code: data.region_code,
+    relevance_score: data.relevance_score ?? 1.0,
+  });
 }

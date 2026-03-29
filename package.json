@@ -10,6 +10,7 @@
     "seed:words": "npx tsx scripts/seed-words.ts",
     "seed:forums": "npx tsx scripts/seed-forums.ts",
     "seed:apps": "npx tsx scripts/seed-apps.ts",
+    "seed:regions": "npx tsx scripts/seed-regions.ts",
     "ingest": "npx tsx scripts/process-inbox.ts"
   },
   "dependencies": {
