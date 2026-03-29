@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 const NAV_ITEMS = [
+  { href: '/', label: 'Home Dashboard', icon: '📊', active: true },
   { href: '/trends', label: 'Viral Trends', icon: '🔥', active: true },
   { href: '/regions', label: 'Region Analysis', icon: '🗺️', active: true },
   { href: '/calendar', label: 'Calendar Trends', icon: '📅', active: true },
@@ -36,7 +37,9 @@ export default function Sidebar() {
       <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
         {NAV_ITEMS.map((item, i) => {
           if ('divider' in item) return <div key={i} className="my-3 border-t border-dark-500" />;
-          const isActive = pathname === item.href || pathname?.startsWith(item.href + '/');
+          const isActive = item.href === '/'
+            ? pathname === '/'
+            : (pathname === item.href || pathname?.startsWith(item.href + '/'));
           const isEnabled = item.active;
 
           return (
