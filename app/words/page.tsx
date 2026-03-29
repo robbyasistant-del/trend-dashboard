@@ -199,12 +199,14 @@ export default function WordsPage() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white">💬 Words Trends</h1>
           <p className="text-sm text-slate-500 mt-1">Term frequency analysis, competition mapping &amp; semantic clustering</p>
         </div>
         <div className="flex gap-2">
+          <a href="/correlations" className="px-3 py-2 text-xs bg-dark-700 border border-dark-500 rounded-lg text-slate-300 hover:text-neon-cyan hover:border-neon-cyan/30 transition-all">🔗 Cross-Platform</a>
+          <a href="/api/export?type=csv&source=words" className="px-3 py-2 text-xs bg-dark-700 border border-dark-500 rounded-lg text-slate-300 hover:text-white hover:border-neon-cyan transition-all">📥 Export</a>
           <button onClick={() => { setShowAnalyze(true); setAnalyzeResult(null); }} className="px-4 py-2 bg-neon-cyan/20 hover:bg-neon-cyan/30 border border-neon-cyan/30 rounded-lg text-sm text-neon-cyan font-medium transition-all">
             🔍 Analyze Now
           </button>

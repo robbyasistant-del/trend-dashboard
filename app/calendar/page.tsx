@@ -280,12 +280,14 @@ export default function CalendarPage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-2">📅 Calendar Trends</h1>
           <p className="text-slate-400 text-sm mt-1">Seasonal intelligence & engagement forecasting</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <a href="/correlations" className="px-3 py-1.5 text-xs bg-dark-700 border border-dark-500 rounded-lg text-slate-300 hover:text-neon-cyan hover:border-neon-cyan/30 transition-all">🔗 Cross-Platform</a>
+          <a href="/api/export?type=csv&source=calendar" className="px-3 py-1.5 text-xs bg-dark-700 border border-dark-500 rounded-lg text-slate-300 hover:text-white hover:border-neon-cyan transition-all">📥 Export</a>
           <div className="flex bg-dark-700 rounded-lg p-0.5">
             <button
               onClick={() => setQuickView('week')}

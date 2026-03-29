@@ -208,12 +208,15 @@ export default function AppsMarketPage() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-2">📱 Apps Market</h1>
           <p className="text-sm text-slate-500 mt-1">Cross-store rankings and growth tracking for casual games</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <a href="/correlations" className="px-3 py-1.5 text-xs bg-dark-700 border border-dark-500 rounded-lg text-slate-300 hover:text-neon-cyan hover:border-neon-cyan/30 transition-all">🔗 Cross-Platform</a>
+          <a href="/competitors" className="px-3 py-1.5 text-xs bg-dark-700 border border-dark-500 rounded-lg text-slate-300 hover:text-neon-green hover:border-neon-green/30 transition-all">🏢 Competitors</a>
+          <a href="/api/export?type=csv&source=apps" className="px-3 py-1.5 text-xs bg-dark-700 border border-dark-500 rounded-lg text-slate-300 hover:text-white hover:border-neon-cyan transition-all">📥 Export</a>
           <button onClick={() => setShowCharts(!showCharts)}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${showCharts ? "bg-neon-cyan/20 text-neon-cyan border border-neon-cyan/30" : "bg-dark-600 text-slate-400 border border-dark-500"}`}>
             {showCharts ? "📊 Charts On" : "📊 Charts Off"}

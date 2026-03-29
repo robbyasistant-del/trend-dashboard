@@ -352,8 +352,10 @@ export default function RegionsPage() {
           </p>
         </div>
 
-        {/* Period Switcher */}
-        <div className="flex items-center gap-3">
+        {/* Actions */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <a href="/correlations" className="px-3 py-1.5 text-xs bg-dark-700 border border-dark-500 rounded-lg text-slate-300 hover:text-neon-cyan hover:border-neon-cyan/30 transition-all">🔗 Cross-Platform</a>
+          <a href="/api/export?type=csv&source=regions" className="px-3 py-1.5 text-xs bg-dark-700 border border-dark-500 rounded-lg text-slate-300 hover:text-white hover:border-neon-cyan transition-all">📥 Export</a>
           {rebuildMsg && (
             <span className="text-xs text-neon-green animate-pulse">{rebuildMsg}</span>
           )}

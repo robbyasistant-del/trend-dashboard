@@ -187,19 +187,23 @@ export default function ForumsPage() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white">🎮 Games Forums</h1>
           <p className="text-sm text-slate-500 mt-1">
             Multi-source forum intelligence — Reddit, Hacker News, TouchArcade &amp; gaming blogs
           </p>
         </div>
-        <button
-          onClick={fetchData}
-          className="px-4 py-2 bg-dark-600 hover:bg-dark-500 border border-dark-500 rounded-lg text-sm text-slate-300 transition-all"
-        >
-          ↻ Refresh
-        </button>
+        <div className="flex gap-2">
+          <a href="/correlations" className="px-3 py-2 text-xs bg-dark-700 border border-dark-500 rounded-lg text-slate-300 hover:text-neon-cyan hover:border-neon-cyan/30 transition-all">🔗 Cross-Platform</a>
+          <a href="/api/export?type=csv&source=forums" className="px-3 py-2 text-xs bg-dark-700 border border-dark-500 rounded-lg text-slate-300 hover:text-white hover:border-neon-cyan transition-all">📥 Export</a>
+          <button
+            onClick={fetchData}
+            className="px-4 py-2 bg-dark-600 hover:bg-dark-500 border border-dark-500 rounded-lg text-sm text-slate-300 transition-all"
+          >
+            ↻ Refresh
+          </button>
+        </div>
       </div>
 
       {/* Stats Row */}
