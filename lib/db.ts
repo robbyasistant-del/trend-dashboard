@@ -1040,3 +1040,124 @@ export function insertAppSnapshot(data: {
     revenue_estimate: data.revenue_estimate || 0,
   });
 }
+
+// ── Apps ↔ Words Cross-Reference ───────────────────────────
+
+export function crossReferenceAppWords(): { appsProcessed: number; wordsCreated: number; frequenciesCreated: number } {
+  const db = getDb();
+  let appsProcessed = 0;
+  let wordsCreated = 0;
+  let frequenciesCreated = 0;
+
+  const apps = db.prepare('SELECT id, name, description, store, category FROM app_entries').all() as Array<{
+    id: number; name: string; description: string | null; store: string; category: string;
+  }>;
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Track keyword frequencies across apps
+  const keywordFreqMap = new Map<string, { freq: number; stores: Set<string>; categories: Set<string> }>();
+
+  for (const app of apps) {
+    const text = (app.name || '') + ' ' + (app.description || '');
+    const terms = extractTerms(text);
+
+    for (const term of terms) {
+      const existing = keywordFreqMap.get(term);
+      if (existing) {
+        existing.freq++;
+        existing.stores.add(app.store);
+        existing.categories.add(app.category);
+      } else {
+        const stores = new Set<string>();
+        stores.add(app.store);
+        const cats = new Set<string>();
+        cats.add(app.category);
+        keywordFreqMap.set(term, { freq: 1, stores, categories: cats });
+      }
+    }
+    appsProcessed++;
+  }
+
+  const transaction = db.transaction(() => {
+    const upsertWord = db.prepare(`
+      INSERT INTO word_entries (word, source, category, frequency, score, growth, sentiment, data_json)
+      VALUES (@word, 'appstore', @category, @frequency, @score, 0, 0, @data_json)
+      ON CONFLICT(word, source) DO UPDATE SET
+        frequency = @frequency,
+        score = @score,
+        last_seen = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP
+    `);
+
+    const insertFreq = db.prepare(`
+      INSERT INTO word_frequencies (word_id, frequency, mentions, period, period_type)
+      VALUES (@word_id, @frequency, @mentions, @period, @period_type)
+    `);
+
+    // Only process keywords that appear in 2+ apps (to filter noise)
+    for (const [word, data] of keywordFreqMap) {
+      if (data.freq < 2) continue;
+
+      const score = Math.min(100, data.freq * 5 + data.stores.size * 10);
+      const storesArr = Array.from(data.stores);
+      const catsArr = Array.from(data.categories);
+
+      const result = upsertWord.run({
+        word,
+        category: catsArr[0] || 'general',
+        frequency: data.freq,
+        score,
+        data_json: JSON.stringify({ stores: storesArr, categories: catsArr, app_mentions: data.freq }),
+      });
+
+      let wordId = Number(result.lastInsertRowid);
+      if (!wordId || result.changes === 0) {
+        const existing = db.prepare("SELECT id FROM word_entries WHERE word = ? AND source = 'appstore'").get(word) as { id: number } | undefined;
+        if (existing) wordId = existing.id;
+      }
+      if (result.changes > 0 && !wordId) {
+        const existing = db.prepare("SELECT id FROM word_entries WHERE word = ? AND source = 'appstore'").get(word) as { id: number } | undefined;
+        if (existing) wordId = existing.id;
+      }
+
+      if (wordId) {
+        insertFreq.run({
+          word_id: wordId,
+          frequency: data.freq,
+          mentions: data.freq,
+          period: today,
+          period_type: 'daily',
+        });
+        frequenciesCreated++;
+      }
+      wordsCreated++;
+    }
+  });
+
+  transaction();
+
+  return { appsProcessed, wordsCreated, frequenciesCreated };
+}
+
+export function getAppTrendingKeywords(limit = 20): Array<{ word: string; frequency: number; score: number; data_json: string }> {
+  const db = getDb();
+  return db.prepare(`
+    SELECT word, frequency, score, data_json FROM word_entries
+    WHERE source = 'appstore' AND frequency >= 2
+    ORDER BY score DESC, frequency DESC
+    LIMIT ?
+  `).all(limit) as Array<{ word: string; frequency: number; score: number; data_json: string }>;
+}
+
+export function getAppStoreComparison(appName: string) {
+  const db = getDb();
+  return db.prepare(`
+    SELECT ae.*, 
+      (SELECT ar.rank FROM app_rankings ar WHERE ar.app_id = ae.id ORDER BY ar.recorded_at DESC LIMIT 1) as latest_rank,
+      (SELECT ar.rank_delta FROM app_rankings ar WHERE ar.app_id = ae.id ORDER BY ar.recorded_at DESC LIMIT 1) as latest_rank_delta
+    FROM app_entries ae
+    WHERE ae.name = ?
+    ORDER BY ae.store ASC
+  `).all(appName) as Array<Record<string, unknown>>;
+}

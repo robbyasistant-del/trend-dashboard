@@ -1,602 +1,565 @@
-'use client';
+"use client";
 
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from "react";
 import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
-  LineChart, Line, CartesianGrid, Legend,
-} from 'recharts';
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  Cell, LineChart, Line, Legend,
+} from "recharts";
 
-// ── Types ──────────────────────────────────────────────────
+// ── Types ──────────────────────────────────────────────────────
 
 interface AppEntry {
-  id: number;
-  external_id: string;
-  store: string;
-  name: string;
-  developer: string | null;
-  description: string | null;
-  icon_url: string | null;
-  category: string;
-  subcategory: string | null;
-  price: number;
-  is_free: number;
-  rating: number;
-  rating_count: number;
-  downloads: number;
-  size_mb: number;
-  url: string | null;
-  tags: string;
-  first_seen: string;
-  last_seen: string;
+  id: number; external_id: string; store: string; name: string; developer: string | null;
+  description: string | null; icon_url: string | null; category: string; subcategory: string | null;
+  price: number; is_free: number; rating: number; rating_count: number; downloads: number;
+  size_mb: number; url: string | null; tags: string; data_json: string;
+  first_seen: string; last_seen: string; created_at: string; updated_at: string;
+}
+
+interface RankingEntry extends AppEntry {
+  app_id: number; rank: number; previous_rank: number | null; rank_delta: number;
+  rank_type: string; recorded_at: string; app_url: string | null;
+}
+
+interface MoverEntry {
+  app_id: number; rank: number; previous_rank: number | null; rank_delta: number;
+  rank_type: string; store: string; category: string; recorded_at: string;
+  name: string; developer: string | null; icon_url: string | null; rating: number;
+  downloads: number; is_free: number;
 }
 
 interface AppStats {
-  total: number;
-  newThisWeek: number;
-  avgRating: number;
+  total: number; newThisWeek: number; avgRating: number;
   topClimber: { name: string; delta: number } | null;
-  storeBreakdown: Array<{ store: string; count: number }>;
-  categoryBreakdown: Array<{ category: string; count: number }>;
-}
-
-interface AppRanking {
-  id: number;
-  app_id: number;
-  store: string;
-  category: string | null;
-  rank: number;
-  previous_rank: number | null;
-  rank_delta: number;
-  rank_type: string;
-  recorded_at: string;
-  name: string;
-  developer: string | null;
-  icon_url: string | null;
-  rating: number;
-  rating_count: number;
-  downloads: number;
-  is_free: number;
-  price: number;
-  app_url: string | null;
-}
-
-interface AppMover {
-  id: number;
-  app_id: number;
-  store: string;
-  rank: number;
-  previous_rank: number | null;
-  rank_delta: number;
-  rank_type: string;
-  name: string;
-  developer: string | null;
-  icon_url: string | null;
-  rating: number;
-  downloads: number;
-  category: string;
-  is_free: number;
+  storeBreakdown: { store: string; count: number }[];
+  categoryBreakdown: { category: string; count: number }[];
 }
 
 interface AppHistoryData {
   app: AppEntry;
-  rankings: Array<{ rank: number; rank_delta: number; rank_type: string; recorded_at: string }>;
-  snapshots: Array<{ rating: number; rating_count: number; downloads: number; revenue_estimate: number; recorded_at: string }>;
+  rankings: { rank: number; rank_delta: number; rank_type: string; recorded_at: string }[];
+  snapshots: { rating: number; rating_count: number; downloads: number; revenue_estimate: number; recorded_at: string }[];
 }
 
-// ── Helpers ────────────────────────────────────────────────
-
-function storeIcon(store: string): string {
-  if (store === 'google_play') return '🤖';
-  if (store === 'app_store') return '🍎';
-  if (store === 'amazon') return '📦';
-  return '📱';
+interface TrendingKeyword {
+  word: string;
+  frequency: number;
+  score: number;
+  data_json: string;
 }
 
-function storeLabel(store: string): string {
-  const map: Record<string, string> = {
-    google_play: 'Google Play',
-    app_store: 'App Store',
-    amazon: 'Amazon',
-  };
-  return map[store] || store;
+interface StoreComparisonEntry {
+  id: number;
+  store: string;
+  name: string;
+  rating: number;
+  rating_count: number;
+  downloads: number;
+  price: number;
+  is_free: number;
+  latest_rank: number | null;
+  latest_rank_delta: number | null;
 }
 
-function formatNumber(n: number): string {
-  if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(1) + 'B';
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+// ── Helpers ────────────────────────────────────────────────────
+
+const STORE_LABELS: Record<string, string> = { google_play: "Google Play", app_store: "App Store", amazon: "Amazon" };
+const STORE_ICONS: Record<string, string> = { google_play: "🤖", app_store: "🍎", amazon: "📦" };
+const STORE_COLORS: Record<string, string> = { google_play: "#34A853", app_store: "#007AFF", amazon: "#FF9900" };
+
+function formatNum(n: number): string {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
 }
 
-function relativeTime(dateStr: string | null): string {
-  if (!dateStr) return 'unknown';
-  const now = Date.now();
-  const then = new Date(dateStr).getTime();
-  const diff = now - then;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return `${Math.floor(days / 30)}mo ago`;
+function starsDisplay(rating: number): string {
+  const full = Math.floor(rating);
+  const half = rating - full >= 0.25 ? "½" : "";
+  return "★".repeat(full) + half + "☆".repeat(5 - full - (half ? 1 : 0));
 }
 
-function rankDeltaDisplay(delta: number) {
-  if (delta > 0) return <span className="text-emerald-400 font-semibold">▲ {delta}</span>;
-  if (delta < 0) return <span className="text-red-400 font-semibold">▼ {Math.abs(delta)}</span>;
+function deltaArrow(delta: number): React.ReactNode {
+  if (delta > 0) return <span className="text-green-400 font-bold">▲ {delta}</span>;
+  if (delta < 0) return <span className="text-red-400 font-bold">▼ {Math.abs(delta)}</span>;
   return <span className="text-slate-500">—</span>;
 }
 
-function ratingStars(rating: number): string {
-  const full = Math.floor(rating);
-  const half = rating - full >= 0.5 ? 1 : 0;
-  return '★'.repeat(full) + (half ? '½' : '') + '☆'.repeat(5 - full - half);
+function timeAgo(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const d = Math.floor(diff / 86400000);
+  if (d > 30) return `${Math.floor(d / 30)}mo ago`;
+  if (d > 0) return `${d}d ago`;
+  const h = Math.floor(diff / 3600000);
+  if (h > 0) return `${h}h ago`;
+  return "Just now";
 }
 
-// ── Store Tabs ─────────────────────────────────────────────
+const ChartTooltip = ({ active, payload, label }: any) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="bg-dark-800 border border-dark-500 rounded-lg px-3 py-2 shadow-xl text-xs">
+      <p className="text-slate-300 font-medium mb-1">{label}</p>
+      {payload.map((e: any, i: number) => (
+        <p key={i} style={{ color: e.color }}>{e.name}: {e.value}</p>
+      ))}
+    </div>
+  );
+};
 
-const STORE_TABS = [
-  { key: '', label: 'All Stores', icon: '🌐' },
-  { key: 'google_play', label: 'Google Play', icon: '🤖' },
-  { key: 'app_store', label: 'App Store', icon: '🍎' },
-  { key: 'amazon', label: 'Amazon', icon: '📦' },
-];
-
-// ── Main Page ──────────────────────────────────────────────
+// ── Page Component ─────────────────────────────────────────────
 
 export default function AppsMarketPage() {
   const [stats, setStats] = useState<AppStats | null>(null);
-  const [rankings, setRankings] = useState<AppRanking[]>([]);
-  const [movers, setMovers] = useState<AppMover[]>([]);
+  const [rankings, setRankings] = useState<RankingEntry[]>([]);
+  const [movers, setMovers] = useState<MoverEntry[]>([]);
   const [newApps, setNewApps] = useState<AppEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Filters
-  const [storeTab, setStoreTab] = useState('');
-  const [category, setCategory] = useState('');
-  const [rankType, setRankType] = useState('');
-  const [freeFilter, setFreeFilter] = useState('');
+  const [storeTab, setStoreTab] = useState("");
+  const [category, setCategory] = useState("");
+  const [freeFilter, setFreeFilter] = useState<"" | "free" | "paid">("");
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState("downloads");
+  const [showCharts, setShowCharts] = useState(true);
 
-  // Detail modal
+  // Modal
   const [selectedAppId, setSelectedAppId] = useState<number | null>(null);
   const [appHistory, setAppHistory] = useState<AppHistoryData | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [storeComparison, setStoreComparison] = useState<StoreComparisonEntry[]>([]);
 
-  const fetchData = useCallback(async () => {
+  // Trending keywords
+  const [trendingKeywords, setTrendingKeywords] = useState<TrendingKeyword[]>([]);
+
+  // Derive categories from rankings
+  const categories = Array.from(new Set(rankings.map(r => r.category).filter(Boolean))).sort();
+
+  const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const storeParam = storeTab ? `&store=${storeTab}` : '';
-      const catParam = category ? `&category=${category}` : '';
-      const rankTypeParam = rankType ? `&rank_type=${rankType}` : '';
+      const params = new URLSearchParams();
+      if (storeTab) params.set("store", storeTab);
+      if (category) params.set("category", category);
+      if (search) params.set("search", search);
+      if (freeFilter === "free") params.set("is_free", "true");
+      if (freeFilter === "paid") params.set("is_free", "false");
+      if (sort) params.set("sort", sort);
+      params.set("limit", "100");
 
-      const [statsRes, rankingsRes, moversRes, newRes] = await Promise.all([
-        fetch('/api/apps-market/stats'),
-        fetch(`/api/apps-market/rankings?limit=50${storeParam}${catParam}${rankTypeParam}`),
-        fetch(`/api/apps-market/movers?limit=20${storeParam}`),
-        fetch(`/api/apps-market/new?limit=12${storeParam}`),
+      const [statsRes, rankingsRes, moversRes, newRes, kwRes] = await Promise.all([
+        fetch("/api/apps-market/stats"),
+        fetch(`/api/apps-market/rankings?${params.toString()}`),
+        fetch(`/api/apps-market/movers?${storeTab ? `store=${storeTab}&` : ""}limit=15`),
+        fetch(`/api/apps-market/new?${storeTab ? `store=${storeTab}&` : ""}limit=12`),
+        fetch("/api/apps-market/keywords?limit=15"),
       ]);
 
-      setStats(await statsRes.json());
-      setRankings(await rankingsRes.json());
-      setMovers(await moversRes.json());
-      setNewApps(await newRes.json());
-    } catch (e) {
-      console.error('Failed to fetch apps market data:', e);
+      const [statsData, rankingsData, moversData, newData, kwData] = await Promise.all([
+        statsRes.json(), rankingsRes.json(), moversRes.json(), newRes.json(), kwRes.json(),
+      ]);
+
+      setStats(statsData);
+      setRankings(Array.isArray(rankingsData) ? rankingsData : []);
+      setMovers(Array.isArray(moversData) ? moversData : []);
+      setNewApps(Array.isArray(newData) ? newData : []);
+      setTrendingKeywords(Array.isArray(kwData) ? kwData : []);
+    } catch (err) {
+      console.error("Failed to fetch apps data:", err);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
-  }, [storeTab, category, rankType]);
+  }, [storeTab, category, freeFilter, search, sort]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { fetchAll(); }, [fetchAll]);
 
-  // Fetch app history for modal
-  const openAppDetail = useCallback(async (appId: number) => {
+  // App detail modal
+  const openAppDetail = async (appId: number) => {
     setSelectedAppId(appId);
     setHistoryLoading(true);
+    setStoreComparison([]);
     try {
       const res = await fetch(`/api/apps-market/${appId}/history`);
       const data = await res.json();
       setAppHistory(data);
-    } catch (e) {
-      console.error('Failed to fetch app history:', e);
-    }
-    setHistoryLoading(false);
-  }, []);
+      // Fetch store comparison for this app name
+      if (data?.app?.name) {
+        try {
+          const compRes = await fetch(`/api/apps-market/keywords?action=comparison&name=${encodeURIComponent(data.app.name)}`);
+          const compData = await compRes.json();
+          setStoreComparison(Array.isArray(compData) ? compData : []);
+        } catch { /* non-critical */ }
+      }
+    } catch { setAppHistory(null); }
+    finally { setHistoryLoading(false); }
+  };
 
-  const closeModal = useCallback(() => {
-    setSelectedAppId(null);
-    setAppHistory(null);
-  }, []);
+  const closeModal = () => { setSelectedAppId(null); setAppHistory(null); setStoreComparison([]); };
 
-  // Derived data
-  const categories = useMemo(
-    () => Array.from(new Set(rankings.map(r => r.category).filter(Boolean) as string[])),
-    [rankings]
-  );
-
-  // Filter rankings by free/paid
-  const filteredRankings = useMemo(() => {
-    let result = rankings;
-    if (freeFilter === 'free') result = result.filter(r => r.is_free === 1);
-    if (freeFilter === 'paid') result = result.filter(r => r.is_free === 0);
-    return result;
-  }, [rankings, freeFilter]);
-
-  // Movers chart data
-  const moversChartData = useMemo(() => {
-    return movers.slice(0, 12).map(m => ({
-      name: m.name.length > 18 ? m.name.slice(0, 16) + '…' : m.name,
-      delta: m.rank_delta,
-      fullName: m.name,
-      store: m.store,
-    }));
-  }, [movers]);
-
-  // Snapshot chart data for detail modal
-  const snapshotChartData = useMemo(() => {
-    if (!appHistory?.snapshots) return [];
-    return appHistory.snapshots.map(s => ({
-      date: new Date(s.recorded_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-      rating: s.rating,
-      downloads: s.downloads,
-      ratingCount: s.rating_count,
-    }));
-  }, [appHistory]);
+  // Prepare movers chart data
+  const moversChartData = movers.slice(0, 10).map(m => ({
+    name: m.name.length > 20 ? m.name.substring(0, 20) + "…" : m.name,
+    delta: m.rank_delta,
+    store: m.store,
+  }));
 
   return (
     <div>
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-white">📱 Apps Market</h1>
-          <p className="text-sm text-slate-500 mt-1">
-            Cross-store rankings &amp; growth tracking — Google Play, App Store &amp; Amazon
-          </p>
+          <h1 className="text-2xl font-bold text-white flex items-center gap-2">📱 Apps Market</h1>
+          <p className="text-sm text-slate-500 mt-1">Cross-store rankings and growth tracking for casual games</p>
         </div>
-        <button
-          onClick={fetchData}
-          className="px-4 py-2 bg-dark-600 hover:bg-dark-500 border border-dark-500 rounded-lg text-sm text-slate-300 transition-all"
-        >
-          ↻ Refresh
-        </button>
+        <div className="flex items-center gap-3">
+          <button onClick={() => setShowCharts(!showCharts)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${showCharts ? "bg-neon-cyan/20 text-neon-cyan border border-neon-cyan/30" : "bg-dark-600 text-slate-400 border border-dark-500"}`}>
+            {showCharts ? "📊 Charts On" : "📊 Charts Off"}
+          </button>
+          <div className="text-xs text-slate-600 bg-dark-700 px-3 py-1.5 rounded-lg border border-dark-500">
+            {stats?.total || 0} apps tracked
+          </div>
+        </div>
       </div>
 
-      {/* Stats Row */}
-      {stats && (
-        <div className="grid grid-cols-4 gap-4 mb-6">
-          <div className="stat-card glow-cyan">
-            <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Total Apps</p>
-            <p className="text-2xl font-bold text-neon-cyan">{stats.total.toLocaleString()}</p>
+      {/* Stats Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        {[
+          { label: "Total Apps", value: stats?.total ?? "—", icon: "📱", color: "from-purple-500/20 to-blue-500/10", border: "border-purple-500/20", textColor: "text-purple-400" },
+          { label: "New This Week", value: stats?.newThisWeek ?? "—", icon: "🆕", color: "from-cyan-500/20 to-blue-500/10", border: "border-cyan-500/20", textColor: "text-cyan-400" },
+          { label: "Avg Rating", value: stats ? `${stats.avgRating} ★` : "—", icon: "⭐", color: "from-yellow-500/20 to-orange-500/10", border: "border-yellow-500/20", textColor: "text-yellow-400" },
+          { label: "Top Climber", value: stats?.topClimber ? `▲${stats.topClimber.delta}` : "—", icon: "🚀", color: "from-green-500/20 to-emerald-500/10", border: "border-green-500/20", textColor: "text-green-400",
+            sub: stats?.topClimber?.name },
+        ].map(card => (
+          <div key={card.label} className={`bg-gradient-to-br ${card.color} border ${card.border} rounded-xl p-5 card-hover`}>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[10px] text-slate-400 uppercase tracking-wider font-medium">{card.label}</span>
+              <span className="text-lg">{card.icon}</span>
+            </div>
+            <div className={`text-2xl font-bold ${card.textColor}`}>{card.value}</div>
+            {card.sub && <div className="text-[10px] text-slate-500 mt-1 truncate">{card.sub}</div>}
           </div>
-          <div className="stat-card glow-green">
-            <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">New This Week</p>
-            <p className="text-2xl font-bold text-neon-green">{stats.newThisWeek}</p>
-          </div>
-          <div className="stat-card glow-magenta">
-            <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Avg Rating</p>
-            <p className="text-2xl font-bold text-neon-magenta">{stats.avgRating.toFixed(1)} ★</p>
-          </div>
-          <div className="stat-card glow-amber">
-            <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Top Climber</p>
-            <p className="text-lg font-bold text-neon-amber truncate">
-              {stats.topClimber ? (
-                <>{stats.topClimber.name} <span className="text-emerald-400 text-sm">▲{stats.topClimber.delta}</span></>
-              ) : '—'}
-            </p>
+        ))}
+      </div>
+
+      {/* Trending Keywords from App Stores */}
+      {trendingKeywords.length > 0 && (
+        <div className="bg-dark-700 border border-dark-500 rounded-xl p-4 mb-6">
+          <h3 className="text-xs font-semibold text-slate-400 mb-3">🔑 Trending App Keywords</h3>
+          <div className="flex flex-wrap gap-2">
+            {trendingKeywords.map(kw => {
+              let parsed: { stores?: string[] } = {};
+              try { parsed = JSON.parse(kw.data_json); } catch { /* ignore */ }
+              const stores = parsed.stores || [];
+              return (
+                <span
+                  key={kw.word}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-neon-cyan/10 border border-neon-cyan/20 rounded-full text-xs text-neon-cyan hover:bg-neon-cyan/20 transition-colors cursor-default"
+                >
+                  <span className="font-medium">{kw.word}</span>
+                  <span className="text-[9px] bg-neon-cyan/20 px-1.5 py-0.5 rounded-full text-neon-cyan/80">
+                    {kw.frequency}x
+                  </span>
+                  {stores.length > 1 && (
+                    <span className="text-[8px] bg-neon-amber/20 text-neon-amber px-1 py-0.5 rounded-full ml-0.5">
+                      🏪 {stores.length} stores
+                    </span>
+                  )}
+                </span>
+              );
+            })}
           </div>
         </div>
       )}
 
       {/* Store Tabs */}
-      <div className="flex items-center gap-2 mb-6">
-        {STORE_TABS.map(tab => (
-          <button
-            key={tab.key}
-            onClick={() => setStoreTab(tab.key)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium border transition-all ${
+      <div className="flex gap-2 mb-4">
+        {[{ key: "", label: "All Stores", icon: "🌐" },
+          { key: "google_play", label: "Google Play", icon: "🤖" },
+          { key: "app_store", label: "App Store", icon: "🍎" },
+          { key: "amazon", label: "Amazon", icon: "📦" }
+        ].map(tab => (
+          <button key={tab.key} onClick={() => setStoreTab(tab.key)}
+            className={`px-4 py-2 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 ${
               storeTab === tab.key
-                ? 'bg-neon-cyan/20 border-neon-cyan/40 text-neon-cyan'
-                : 'bg-dark-600 border-dark-500 text-slate-400 hover:text-slate-300 hover:bg-dark-500'
-            }`}
-          >
-            {tab.icon} {tab.label}
+                ? "bg-dark-600 text-white border border-neon-cyan/30 glow-cyan"
+                : "bg-dark-700 text-slate-400 border border-dark-500 hover:text-slate-200"
+            }`}>
+            <span>{tab.icon}</span> {tab.label}
           </button>
         ))}
       </div>
 
       {/* Filter Bar */}
-      <div className="flex flex-wrap items-center gap-3 mb-4">
-        <select
-          value={category}
-          onChange={e => setCategory(e.target.value)}
-        >
-          <option value="">All Categories</option>
-          {categories.map(c => (
-            <option key={c} value={c}>{c}</option>
-          ))}
-        </select>
-        <select
-          value={rankType}
-          onChange={e => setRankType(e.target.value)}
-        >
-          <option value="">All Chart Types</option>
-          <option value="top_free">Top Free</option>
-          <option value="top_paid">Top Paid</option>
-          <option value="top_grossing">Top Grossing</option>
-        </select>
-        <select
-          value={freeFilter}
-          onChange={e => setFreeFilter(e.target.value)}
-        >
-          <option value="">Free &amp; Paid</option>
-          <option value="free">Free Only</option>
-          <option value="paid">Paid Only</option>
-        </select>
+      <div className="bg-dark-700 border border-dark-500 rounded-xl p-4 mb-6">
+        <div className="flex flex-wrap gap-3 items-center">
+          <div className="flex-1 min-w-[200px] relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm">🔍</span>
+            <input type="text" placeholder="Search apps or developers..." value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="w-full bg-dark-800 border border-dark-500 rounded-lg pl-9 pr-4 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-neon-cyan/50 transition-all" />
+          </div>
+          <select value={category} onChange={e => setCategory(e.target.value)}
+            className="bg-dark-800 border border-dark-500 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-neon-cyan/50 cursor-pointer">
+            <option value="">All Categories</option>
+            {categories.map(c => <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>)}
+          </select>
+          <select value={freeFilter} onChange={e => setFreeFilter(e.target.value as any)}
+            className="bg-dark-800 border border-dark-500 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-neon-cyan/50 cursor-pointer">
+            <option value="">Free &amp; Paid</option>
+            <option value="free">Free Only</option>
+            <option value="paid">Paid Only</option>
+          </select>
+          <select value={sort} onChange={e => setSort(e.target.value)}
+            className="bg-dark-800 border border-dark-500 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-neon-cyan/50 cursor-pointer">
+            <option value="downloads">Sort: Downloads</option>
+            <option value="rating">Sort: Rating</option>
+            <option value="newest">Sort: Newest</option>
+            <option value="name">Sort: Name</option>
+          </select>
+        </div>
       </div>
 
-      {loading ? (
-        <div className="text-center py-12 text-slate-500">Loading apps market data...</div>
-      ) : (
-        <>
-          {/* Rankings Table */}
-          <div className="card mb-6">
-            <h3 className="text-sm font-semibold text-slate-400 mb-3">🏆 Rankings</h3>
-            {filteredRankings.length === 0 ? (
-              <div className="text-center py-8">
-                <p className="text-slate-500 text-lg mb-2">No rankings found</p>
-                <p className="text-slate-600 text-sm">
-                  Run the seed script: <code className="bg-dark-700 px-2 py-1 rounded">npm run seed:apps</code>
-                </p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-xs text-slate-500 uppercase tracking-wider border-b border-dark-500">
-                      <th className="pb-2 pr-3 w-12">#</th>
-                      <th className="pb-2 pr-3 w-8">Store</th>
-                      <th className="pb-2 pr-3">App</th>
-                      <th className="pb-2 pr-3">Developer</th>
-                      <th className="pb-2 pr-3 text-center">Rating</th>
-                      <th className="pb-2 pr-3 text-right">Downloads</th>
-                      <th className="pb-2 pr-3 text-center">Delta</th>
-                      <th className="pb-2 text-center">Type</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredRankings.map((r) => (
-                      <tr
-                        key={r.id}
-                        className="border-b border-dark-600/50 hover:bg-dark-700/50 cursor-pointer transition-colors"
-                        onClick={() => openAppDetail(r.app_id)}
-                      >
-                        <td className="py-2.5 pr-3 font-bold text-slate-300">{r.rank}</td>
-                        <td className="py-2.5 pr-3 text-base">{storeIcon(r.store)}</td>
-                        <td className="py-2.5 pr-3">
-                          <span className="text-white font-medium hover:text-neon-cyan transition-colors">
-                            {r.name}
-                          </span>
-                          {r.is_free === 0 && (
-                            <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-neon-amber/20 text-neon-amber">
-                              ${r.price}
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-2.5 pr-3 text-slate-500">{r.developer || '—'}</td>
-                        <td className="py-2.5 pr-3 text-center">
-                          <span className="text-yellow-400">{r.rating.toFixed(1)}</span>
-                          <span className="text-slate-600 text-xs ml-1">({formatNumber(r.rating_count)})</span>
-                        </td>
-                        <td className="py-2.5 pr-3 text-right text-slate-300">{formatNumber(r.downloads)}</td>
-                        <td className="py-2.5 pr-3 text-center">{rankDeltaDisplay(r.rank_delta)}</td>
-                        <td className="py-2.5 text-center">
-                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-dark-800 text-slate-500 border border-dark-500">
-                            {r.rank_type.replace('_', ' ')}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          {/* Top Movers Chart */}
-          {moversChartData.length > 0 && (
-            <div className="card mb-6">
-              <h3 className="text-sm font-semibold text-slate-400 mb-3">📈 Top Movers</h3>
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={moversChartData} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
-                  <XAxis
-                    dataKey="name"
-                    tick={{ fontSize: 10, fill: '#64748b' }}
-                    axisLine={{ stroke: '#2a2a5a' }}
-                    tickLine={false}
-                    angle={-30}
-                    textAnchor="end"
-                    height={70}
-                  />
-                  <YAxis
-                    tick={{ fontSize: 10, fill: '#64748b' }}
-                    axisLine={{ stroke: '#2a2a5a' }}
-                    tickLine={false}
-                    label={{ value: 'Rank Change', angle: -90, position: 'insideLeft', style: { fontSize: 10, fill: '#64748b' } }}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: '#161638',
-                      border: '1px solid #2a2a5a',
-                      borderRadius: 8,
-                      fontSize: 12,
-                    }}
-                    formatter={(value: number) => {
-                      const label = value > 0 ? `▲ ${value} (climbed)` : value < 0 ? `▼ ${Math.abs(value)} (dropped)` : 'No change';
-                      return [label, 'Rank Delta'];
-                    }}
-                    labelFormatter={(label: string) => `App: ${label}`}
-                  />
-                  <Bar dataKey="delta" radius={[4, 4, 0, 0]} maxBarSize={40}>
-                    {moversChartData.map((entry, index) => (
-                      <Cell
-                        key={index}
-                        fill={entry.delta > 0 ? '#10b981' : entry.delta < 0 ? '#ef4444' : '#64748b'}
-                        fillOpacity={0.8}
-                      />
+      {/* Charts Section */}
+      {showCharts && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+          {/* Top Movers */}
+          <div className="bg-dark-700 border border-dark-500 rounded-xl p-5">
+            <h3 className="text-sm font-semibold text-slate-200 mb-4">🚀 Top Movers (Rank Changes)</h3>
+            {moversChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={250}>
+                <BarChart data={moversChartData} layout="vertical" margin={{ left: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#2e2e45" />
+                  <XAxis type="number" tick={{ fill: "#64748b", fontSize: 10 }} />
+                  <YAxis type="category" dataKey="name" tick={{ fill: "#94a3b8", fontSize: 10 }} width={130} />
+                  <Tooltip content={<ChartTooltip />} />
+                  <Bar dataKey="delta" name="Rank Δ" radius={[0, 4, 4, 0]}>
+                    {moversChartData.map((entry, i) => (
+                      <Cell key={i} fill={entry.delta >= 0 ? "#10b981" : "#ef4444"} />
                     ))}
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
-            </div>
-          )}
+            ) : <p className="text-xs text-slate-500 text-center py-8">No mover data available</p>}
+          </div>
 
-          {/* New Apps Gallery */}
-          {newApps.length > 0 && (
-            <div className="card mb-6">
-              <h3 className="text-sm font-semibold text-slate-400 mb-3">🆕 New Apps</h3>
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                {newApps.map(app => (
-                  <div
-                    key={app.id}
-                    className="bg-dark-800 rounded-lg p-3 border border-dark-600 hover:border-neon-cyan/30 transition-all cursor-pointer group"
-                    onClick={() => openAppDetail(app.id)}
-                  >
-                    <div className="flex items-center gap-2 mb-2">
-                      <div className="w-10 h-10 rounded-lg bg-dark-700 flex items-center justify-center text-lg flex-shrink-0">
-                        {storeIcon(app.store)}
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-xs font-semibold text-white truncate group-hover:text-neon-cyan transition-colors">
-                          {app.name}
-                        </p>
-                        <p className="text-[10px] text-slate-500 truncate">{app.developer}</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between text-[10px]">
-                      <span className="text-yellow-400">{app.rating.toFixed(1)} ★</span>
-                      <span className="text-slate-500">{formatNumber(app.downloads)} dl</span>
-                      <span className="text-slate-600">{relativeTime(app.first_seen)}</span>
-                    </div>
-                    <div className="flex items-center gap-1 mt-1.5">
-                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-dark-700 text-slate-500">{app.category}</span>
-                      {app.is_free ? (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400">Free</span>
-                      ) : (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded bg-neon-amber/20 text-neon-amber">${app.price}</span>
-                      )}
-                    </div>
+          {/* Store & Category Breakdown */}
+          <div className="bg-dark-700 border border-dark-500 rounded-xl p-5">
+            <h3 className="text-sm font-semibold text-slate-200 mb-4">📊 Store &amp; Category Breakdown</h3>
+            {stats?.storeBreakdown && stats.storeBreakdown.length > 0 ? (
+              <div className="space-y-6">
+                {/* Store bars */}
+                <div>
+                  <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-2">By Store</p>
+                  <div className="space-y-2">
+                    {stats.storeBreakdown.map(s => {
+                      const pct = stats.total > 0 ? (s.count / stats.total) * 100 : 0;
+                      return (
+                        <div key={s.store} className="flex items-center gap-2">
+                          <span className="text-xs w-24 text-slate-300 flex items-center gap-1">
+                            {STORE_ICONS[s.store] || "🌐"} {STORE_LABELS[s.store] || s.store}
+                          </span>
+                          <div className="flex-1 h-4 bg-dark-800 rounded-full overflow-hidden">
+                            <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: STORE_COLORS[s.store] || "#8b5cf6" }} />
+                          </div>
+                          <span className="text-[10px] text-slate-400 w-12 text-right">{s.count} ({Math.round(pct)}%)</span>
+                        </div>
+                      );
+                    })}
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Store Breakdown */}
-          {stats && stats.storeBreakdown.length > 0 && (
-            <div className="grid grid-cols-2 gap-4 mb-6">
-              <div className="card">
-                <h3 className="text-sm font-semibold text-slate-400 mb-3">🏪 Store Breakdown</h3>
-                <div className="space-y-2">
-                  {stats.storeBreakdown.map(s => (
-                    <div key={s.store} className="flex items-center justify-between p-2 bg-dark-800 rounded-lg">
-                      <span className="text-sm text-slate-300">
-                        {storeIcon(s.store)} {storeLabel(s.store)}
-                      </span>
-                      <span className="text-sm font-bold text-neon-cyan">{s.count}</span>
-                    </div>
-                  ))}
+                </div>
+                {/* Category bars */}
+                <div>
+                  <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-2">By Category</p>
+                  <div className="space-y-1.5">
+                    {stats.categoryBreakdown.slice(0, 6).map((c, i) => {
+                      const pct = stats.total > 0 ? (c.count / stats.total) * 100 : 0;
+                      const colors = ["#8b5cf6", "#3b82f6", "#06b6d4", "#10b981", "#f59e0b", "#f97316"];
+                      return (
+                        <div key={c.category} className="flex items-center gap-2">
+                          <span className="text-[11px] w-20 text-slate-400 truncate capitalize">{c.category}</span>
+                          <div className="flex-1 h-3 bg-dark-800 rounded-full overflow-hidden">
+                            <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: colors[i % colors.length] }} />
+                          </div>
+                          <span className="text-[10px] text-slate-500 w-8 text-right">{c.count}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
-              <div className="card">
-                <h3 className="text-sm font-semibold text-slate-400 mb-3">📂 Top Categories</h3>
-                <div className="space-y-2">
-                  {stats.categoryBreakdown.slice(0, 6).map(c => (
-                    <div key={c.category} className="flex items-center justify-between p-2 bg-dark-800 rounded-lg">
-                      <span className="text-sm text-slate-300 capitalize">{c.category}</span>
-                      <span className="text-sm font-bold text-neon-magenta">{c.count}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </>
+            ) : <p className="text-xs text-slate-500 text-center py-8">No data available</p>}
+          </div>
+        </div>
       )}
+
+      {/* Rankings Table */}
+      <div className="bg-dark-700 border border-dark-500 rounded-xl mb-6">
+        <div className="px-5 py-4 border-b border-dark-500 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-slate-200">🏆 Rankings</h3>
+          <span className="text-[10px] text-slate-500">{rankings.length} results</span>
+        </div>
+        {loading ? (
+          <div className="space-y-2 p-4">{[...Array(5)].map((_, i) => <div key={i} className="h-14 bg-dark-600 rounded-lg animate-pulse" />)}</div>
+        ) : rankings.length === 0 ? (
+          <div className="text-center py-12">
+            <div className="text-3xl mb-3">📭</div>
+            <p className="text-sm text-slate-400">No rankings found</p>
+            <p className="text-[10px] text-slate-600 mt-1">Try adjusting filters or run seed-apps</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="text-[10px] text-slate-500 uppercase tracking-wider border-b border-dark-500">
+                  <th className="px-4 py-3 w-12">#</th>
+                  <th className="px-4 py-3 w-8">Δ</th>
+                  <th className="px-4 py-3">App</th>
+                  <th className="px-4 py-3 w-16">Store</th>
+                  <th className="px-4 py-3 w-20">Category</th>
+                  <th className="px-4 py-3 w-16">Rating</th>
+                  <th className="px-4 py-3 w-20 text-right">Downloads</th>
+                  <th className="px-4 py-3 w-16 text-right">Price</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rankings.map((r, idx) => (
+                  <tr key={`${r.app_id}-${r.store}-${idx}`}
+                    className="border-b border-dark-600/50 hover:bg-dark-600/50 cursor-pointer transition-colors"
+                    onClick={() => openAppDetail(r.app_id)}>
+                    <td className="px-4 py-3 text-xs text-slate-400 font-mono">{r.rank}</td>
+                    <td className="px-4 py-3 text-xs">{deltaArrow(r.rank_delta)}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-dark-500 flex items-center justify-center text-sm flex-shrink-0">
+                          {STORE_ICONS[r.store] || "📱"}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-medium text-white truncate">{r.name}</p>
+                          <p className="text-[10px] text-slate-500 truncate">{r.developer || "Unknown"}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-md" style={{ backgroundColor: `${STORE_COLORS[r.store]}20`, color: STORE_COLORS[r.store] }}>
+                        {STORE_LABELS[r.store] || r.store}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-[11px] text-slate-400 capitalize">{r.category}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-1">
+                        <span className="text-yellow-400 text-[10px]">★</span>
+                        <span className="text-xs text-slate-300">{r.rating?.toFixed(1)}</span>
+                        <span className="text-[9px] text-slate-600">({formatNum(r.rating_count || 0)})</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-300 text-right font-mono">{formatNum(r.downloads || 0)}</td>
+                    <td className="px-4 py-3 text-xs text-right">
+                      {r.is_free ? <span className="text-green-400">Free</span> : <span className="text-yellow-400">${r.price?.toFixed(2)}</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* New Apps Gallery */}
+      <div className="mb-6">
+        <h3 className="text-sm font-semibold text-slate-200 mb-4 flex items-center gap-2">🆕 Recently Detected Apps</h3>
+        {newApps.length > 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {newApps.map(app => (
+              <div key={`${app.external_id}-${app.store}`}
+                className="bg-dark-700 border border-dark-500 rounded-xl p-4 card-hover cursor-pointer"
+                onClick={() => openAppDetail(app.id)}>
+                <div className="flex items-start gap-3 mb-3">
+                  <div className="w-10 h-10 rounded-xl bg-dark-500 flex items-center justify-center text-lg flex-shrink-0">
+                    {STORE_ICONS[app.store] || "📱"}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold text-white truncate">{app.name}</p>
+                    <p className="text-[10px] text-slate-500 truncate">{app.developer || "Unknown"}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 text-[10px] text-slate-400 flex-wrap">
+                  <span className="px-1.5 py-0.5 rounded bg-dark-600 capitalize">{app.category}</span>
+                  <span style={{ color: STORE_COLORS[app.store] }}>{STORE_LABELS[app.store]}</span>
+                  <span className="text-yellow-400">★ {app.rating?.toFixed(1)}</span>
+                  <span className="ml-auto text-slate-600">{timeAgo(app.first_seen)}</span>
+                </div>
+                {app.is_free ? (
+                  <span className="text-[9px] text-green-400 mt-2 inline-block">Free</span>
+                ) : (
+                  <span className="text-[9px] text-yellow-400 mt-2 inline-block">${app.price?.toFixed(2)}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : !loading && (
+          <div className="bg-dark-700 border border-dark-500 rounded-xl p-8 text-center">
+            <p className="text-sm text-slate-400">No new apps detected yet</p>
+          </div>
+        )}
+      </div>
 
       {/* App Detail Modal */}
       {selectedAppId !== null && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4" onClick={closeModal}>
-          <div
-            className="bg-dark-800 border border-dark-500 rounded-xl max-w-2xl w-full max-h-[85vh] overflow-y-auto p-6"
-            onClick={e => e.stopPropagation()}
-          >
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={closeModal}>
+          <div className="bg-dark-800 border border-dark-500 rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-y-auto shadow-2xl mx-4" onClick={e => e.stopPropagation()}>
             {historyLoading ? (
-              <div className="text-center py-12 text-slate-500">Loading app details...</div>
+              <div className="p-8 text-center">
+                <div className="animate-spin text-3xl mb-3">⏳</div>
+                <p className="text-sm text-slate-400">Loading app details...</p>
+              </div>
             ) : appHistory?.app ? (
               <>
-                {/* App Header */}
-                <div className="flex items-start justify-between mb-4">
-                  <div className="flex items-center gap-3">
-                    <div className="w-14 h-14 rounded-xl bg-dark-700 flex items-center justify-center text-2xl">
-                      {storeIcon(appHistory.app.store)}
-                    </div>
-                    <div>
-                      <h2 className="text-lg font-bold text-white">{appHistory.app.name}</h2>
-                      <p className="text-sm text-slate-400">{appHistory.app.developer} · {storeLabel(appHistory.app.store)}</p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-yellow-400 text-sm">{ratingStars(appHistory.app.rating)} {appHistory.app.rating.toFixed(1)}</span>
-                        <span className="text-slate-500 text-xs">({formatNumber(appHistory.app.rating_count)} ratings)</span>
-                      </div>
+                {/* Modal Header */}
+                <div className="p-6 border-b border-dark-500 flex items-start gap-4">
+                  <div className="w-14 h-14 rounded-2xl bg-dark-600 flex items-center justify-center text-2xl flex-shrink-0">
+                    {STORE_ICONS[appHistory.app.store] || "📱"}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h2 className="text-lg font-bold text-white">{appHistory.app.name}</h2>
+                    <p className="text-xs text-slate-400">{appHistory.app.developer} · {STORE_LABELS[appHistory.app.store]}</p>
+                    <div className="flex items-center gap-3 mt-2 text-xs text-slate-400">
+                      <span className="text-yellow-400">{starsDisplay(appHistory.app.rating)} {appHistory.app.rating?.toFixed(1)}</span>
+                      <span>({formatNum(appHistory.app.rating_count)} ratings)</span>
+                      <span>📥 {formatNum(appHistory.app.downloads)}</span>
+                      <span className="capitalize bg-dark-600 px-1.5 py-0.5 rounded">{appHistory.app.category}</span>
                     </div>
                   </div>
-                  <button onClick={closeModal} className="text-slate-500 hover:text-white text-xl">✕</button>
+                  <button onClick={closeModal} className="text-slate-500 hover:text-white text-lg transition-colors">✕</button>
                 </div>
 
-                {/* App Meta */}
-                <div className="grid grid-cols-4 gap-3 mb-4">
-                  <div className="bg-dark-700 rounded-lg p-2.5 text-center">
-                    <p className="text-[10px] text-slate-500 uppercase">Downloads</p>
-                    <p className="text-sm font-bold text-neon-cyan">{formatNumber(appHistory.app.downloads)}</p>
-                  </div>
-                  <div className="bg-dark-700 rounded-lg p-2.5 text-center">
-                    <p className="text-[10px] text-slate-500 uppercase">Category</p>
-                    <p className="text-sm font-bold text-neon-magenta capitalize">{appHistory.app.category}</p>
-                  </div>
-                  <div className="bg-dark-700 rounded-lg p-2.5 text-center">
-                    <p className="text-[10px] text-slate-500 uppercase">Price</p>
-                    <p className="text-sm font-bold text-neon-green">{appHistory.app.is_free ? 'Free' : `$${appHistory.app.price}`}</p>
-                  </div>
-                  <div className="bg-dark-700 rounded-lg p-2.5 text-center">
-                    <p className="text-[10px] text-slate-500 uppercase">Size</p>
-                    <p className="text-sm font-bold text-slate-300">{appHistory.app.size_mb}MB</p>
-                  </div>
-                </div>
-
+                {/* Description */}
                 {appHistory.app.description && (
-                  <p className="text-xs text-slate-400 mb-4 leading-relaxed">{appHistory.app.description}</p>
+                  <div className="px-6 py-4 border-b border-dark-600/50">
+                    <p className="text-xs text-slate-400 leading-relaxed">{appHistory.app.description}</p>
+                  </div>
                 )}
 
-                {/* Growth History Chart — Downloads */}
-                {snapshotChartData.length > 1 && (
-                  <div className="mb-4">
-                    <h3 className="text-xs font-semibold text-slate-400 mb-2">📊 Growth History</h3>
-                    <ResponsiveContainer width="100%" height={200}>
-                      <LineChart data={snapshotChartData} margin={{ top: 5, right: 10, bottom: 5, left: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#2a2a5a" />
-                        <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#64748b' }} tickLine={false} />
-                        <YAxis tick={{ fontSize: 9, fill: '#64748b' }} tickLine={false} tickFormatter={(v: number) => formatNumber(v)} />
-                        <Tooltip
-                          contentStyle={{ background: '#161638', border: '1px solid #2a2a5a', borderRadius: 8, fontSize: 11 }}
-                          formatter={(value: number, name: string) => {
-                            if (name === 'downloads') return [formatNumber(value), 'Downloads'];
-                            if (name === 'ratingCount') return [formatNumber(value), 'Ratings'];
-                            return [value, name];
-                          }}
-                        />
-                        <Legend wrapperStyle={{ fontSize: 10 }} />
-                        <Line type="monotone" dataKey="downloads" stroke="#22d3ee" strokeWidth={2} dot={false} name="Downloads" />
-                        <Line type="monotone" dataKey="ratingCount" stroke="#d946ef" strokeWidth={2} dot={false} name="Ratings" />
+                {/* Growth Charts */}
+                {appHistory.snapshots.length > 1 && (
+                  <div className="p-6 border-b border-dark-600/50">
+                    <h3 className="text-xs font-semibold text-slate-300 mb-3">📈 Growth History</h3>
+                    <ResponsiveContainer width="100%" height={180}>
+                      <LineChart data={appHistory.snapshots.map(s => ({
+                        date: s.recorded_at.slice(5, 10),
+                        downloads: s.downloads,
+                        ratings: s.rating_count,
+                      }))}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#2e2e45" />
+                        <XAxis dataKey="date" tick={{ fill: "#64748b", fontSize: 9 }} />
+                        <YAxis yAxisId="l" tick={{ fill: "#64748b", fontSize: 9 }} tickFormatter={formatNum} />
+                        <YAxis yAxisId="r" orientation="right" tick={{ fill: "#64748b", fontSize: 9 }} tickFormatter={formatNum} />
+                        <Tooltip content={<ChartTooltip />} />
+                        <Legend wrapperStyle={{ fontSize: "10px" }} />
+                        <Line yAxisId="l" type="monotone" dataKey="downloads" name="Downloads" stroke="#8b5cf6" strokeWidth={2} dot={{ r: 2 }} />
+                        <Line yAxisId="r" type="monotone" dataKey="ratings" name="Rating Count" stroke="#10b981" strokeWidth={2} dot={{ r: 2 }} />
                       </LineChart>
                     </ResponsiveContainer>
                   </div>
@@ -604,36 +567,60 @@ export default function AppsMarketPage() {
 
                 {/* Ranking History */}
                 {appHistory.rankings.length > 0 && (
-                  <div>
-                    <h3 className="text-xs font-semibold text-slate-400 mb-2">🏆 Ranking History</h3>
-                    <div className="space-y-1">
+                  <div className="p-6">
+                    <h3 className="text-xs font-semibold text-slate-300 mb-3">🏆 Ranking History</h3>
+                    <div className="space-y-2">
                       {appHistory.rankings.map((r, i) => (
-                        <div key={i} className="flex items-center justify-between py-1.5 px-2 bg-dark-700 rounded text-xs">
-                          <span className="text-slate-300">Rank #{r.rank}</span>
-                          <span>{rankDeltaDisplay(r.rank_delta)}</span>
-                          <span className="text-slate-500">{r.rank_type.replace('_', ' ')}</span>
-                          <span className="text-slate-600">{new Date(r.recorded_at).toLocaleDateString()}</span>
+                        <div key={i} className="flex items-center gap-3 text-xs bg-dark-700 rounded-lg px-3 py-2">
+                          <span className="text-slate-500 text-[10px] w-16">{r.recorded_at.slice(0, 10)}</span>
+                          <span className="font-mono text-slate-300">#{r.rank}</span>
+                          <span>{deltaArrow(r.rank_delta)}</span>
+                          <span className="text-[10px] text-slate-500 capitalize">{r.rank_type.replace("_", " ")}</span>
                         </div>
                       ))}
                     </div>
                   </div>
                 )}
 
+                {/* App URL */}
                 {appHistory.app.url && (
-                  <div className="mt-4 text-center">
-                    <a
-                      href={appHistory.app.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs text-neon-cyan hover:underline"
-                    >
-                      View in {storeLabel(appHistory.app.store)} →
+                  <div className="px-6 pb-6">
+                    <a href={appHistory.app.url} target="_blank" rel="noopener noreferrer"
+                      className="text-xs text-neon-cyan hover:underline">
+                      View in {STORE_LABELS[appHistory.app.store]} →
                     </a>
+                  </div>
+                )}
+
+                {/* Store Comparison */}
+                {storeComparison.length > 1 && (
+                  <div className="px-6 pb-6 border-t border-dark-600/50 pt-4">
+                    <h3 className="text-xs font-semibold text-slate-300 mb-3">🏪 Cross-Store Comparison</h3>
+                    <div className="grid gap-2">
+                      {storeComparison.map((sc) => (
+                        <div key={sc.id} className="flex items-center gap-3 bg-dark-700 rounded-lg px-3 py-2.5 text-xs">
+                          <span className="text-base">{STORE_ICONS[sc.store] || "📱"}</span>
+                          <span className="text-slate-300 font-medium w-20">{STORE_LABELS[sc.store] || sc.store}</span>
+                          <span className="text-yellow-400">★ {sc.rating?.toFixed(1)}</span>
+                          <span className="text-slate-500">({formatNum(sc.rating_count || 0)})</span>
+                          <span className="text-slate-300 ml-auto">📥 {formatNum(sc.downloads || 0)}</span>
+                          {sc.latest_rank && (
+                            <span className="text-slate-400 font-mono">#{sc.latest_rank}</span>
+                          )}
+                          {sc.latest_rank_delta !== null && sc.latest_rank_delta !== 0 && (
+                            <span>{deltaArrow(sc.latest_rank_delta)}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </>
             ) : (
-              <div className="text-center py-12 text-slate-500">App not found</div>
+              <div className="p-8 text-center">
+                <p className="text-sm text-slate-400">App not found</p>
+                <button onClick={closeModal} className="mt-3 text-xs text-neon-cyan">Close</button>
+              </div>
             )}
           </div>
         </div>

@@ -267,5 +267,64 @@ const insertCategories = db.transaction(() => {
 insertCategories();
 console.log(`  ✅ ${categories.length} store categories created`);
 
+// ── Cron Configs for App Store Scanners ──────────────────
+const cronConfigs = [
+  {
+    name: 'Google Play Scanner',
+    description: 'Scans Google Play top charts for casual, puzzle, and strategy games. Tracks rankings, ratings, and new entries.',
+    prompt: 'Scan Google Play top free, top paid, and top grossing charts for casual games, puzzle games, and strategy games. For each app extract: package name (external_id), store ("google_play"), name, developer, category, rating, rating_count, downloads, price, rank, rank_type. Output as JSON with target: "apps-market" and apps array.',
+    schedule: '0 */6 * * *',
+    agent: 'default',
+    source_type: 'google_play',
+    target_dashboard: 'apps-market',
+    enabled: 1,
+  },
+  {
+    name: 'App Store Scanner',
+    description: 'Scans Apple App Store top charts for casual, puzzle, and strategy games. Tracks rankings, ratings, and new entries.',
+    prompt: 'Scan Apple App Store top free, top paid, and top grossing charts for casual games, puzzle games, and strategy games. For each app extract: App Store ID (external_id), store ("app_store"), name, developer, category, rating, rating_count, downloads estimate, price, rank, rank_type. Output as JSON with target: "apps-market" and apps array.',
+    schedule: '15 */6 * * *',
+    agent: 'default',
+    source_type: 'app_store',
+    target_dashboard: 'apps-market',
+    enabled: 1,
+  },
+  {
+    name: 'Amazon Appstore Scanner',
+    description: 'Scans Amazon Appstore for top casual and puzzle games. Tracks rankings and new entries.',
+    prompt: 'Scan Amazon Appstore top charts for casual games, puzzle games, and strategy games. For each app extract: ASIN (external_id), store ("amazon"), name, developer, category, rating, rating_count, downloads estimate, price, rank, rank_type. Output as JSON with target: "apps-market" and apps array.',
+    schedule: '30 */6 * * *',
+    agent: 'default',
+    source_type: 'amazon',
+    target_dashboard: 'apps-market',
+    enabled: 1,
+  },
+  {
+    name: 'New App Detector',
+    description: 'Detects newly launched casual and puzzle games across all stores. Focuses on apps less than 7 days old with promising early metrics.',
+    prompt: 'Search Google Play, App Store, and Amazon Appstore for newly released casual games, puzzle games, and indie games from the last 7 days. Focus on apps with early traction (high initial ratings, featured placements). For each app extract: external_id, store, name, developer, category, rating, rating_count, downloads, price. Output as JSON with target: "apps-market" and apps array.',
+    schedule: '0 8,20 * * *',
+    agent: 'default',
+    source_type: 'multi-store',
+    target_dashboard: 'apps-market',
+    enabled: 1,
+  },
+];
+
+const insertCron = db.prepare(`
+  INSERT OR IGNORE INTO cron_configs (name, description, prompt, schedule, agent, source_type, target_dashboard, enabled)
+  VALUES (@name, @description, @prompt, @schedule, @agent, @source_type, @target_dashboard, @enabled)
+`);
+
+let cronsInserted = 0;
+for (const c of cronConfigs) {
+  const existing = db.prepare('SELECT id FROM cron_configs WHERE name = ?').get(c.name);
+  if (!existing) {
+    insertCron.run(c);
+    cronsInserted++;
+  }
+}
+console.log(`  ✅ ${cronsInserted} cron configs created (${cronConfigs.length - cronsInserted} already existed)`);
+
 console.log('✅ Apps market seed complete!');
 db.close();

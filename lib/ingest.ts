@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { getDb, crossReferenceForumWords, upsertAppEntry, insertAppRanking, insertAppSnapshot } from './db';
+import { getDb, crossReferenceForumWords, crossReferenceAppWords, upsertAppEntry, insertAppRanking, insertAppSnapshot } from './db';
 
 const INBOX_DIR = path.join(process.cwd(), 'data', 'inbox');
 
@@ -356,6 +356,9 @@ export function ingestPayload(payload: InboxPayload) {
     });
 
     batchApps(payload.apps);
+
+    // Cross-reference app keywords with word trends
+    try { crossReferenceAppWords(); } catch { /* non-critical */ }
   }
 
   // Log cron run if applicable
