@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { getDb, crossReferenceForumWords, crossReferenceAppWords, upsertAppEntry, insertAppRanking, insertAppSnapshot, upsertGeoTrendLink } from './db';
+import { getDb, crossReferenceForumWords, crossReferenceAppWords, upsertAppEntry, insertAppRanking, insertAppSnapshot, upsertGeoTrendLink, createCalendarEvent } from './db';
 
 const INBOX_DIR = path.join(process.cwd(), 'data', 'inbox');
 
@@ -69,6 +69,21 @@ export interface InboxApp {
   data?: Record<string, unknown>;
 }
 
+export interface InboxCalendarEvent {
+  title: string;
+  description?: string;
+  event_type?: string;
+  start_date: string;
+  end_date?: string;
+  recurrence?: string;
+  region?: string;
+  impact_score?: number;
+  categories?: string[];
+  tags?: string[];
+  color?: string;
+  data?: Record<string, unknown>;
+}
+
 export interface InboxPayload {
   source?: string;
   target?: string;
@@ -76,6 +91,7 @@ export interface InboxPayload {
   words?: InboxWord[];
   forum_posts?: InboxForumPost[];
   apps?: InboxApp[];
+  calendar_events?: InboxCalendarEvent[];
   cron_config_id?: number;
 }
 
@@ -373,9 +389,33 @@ export function ingestPayload(payload: InboxPayload) {
     try { crossReferenceAppWords(); } catch { /* non-critical */ }
   }
 
+  // ── Calendar Events ingestion ──────────────────────────────
+  if ((payload.target === 'calendar' || payload.calendar_events) && payload.calendar_events && Array.isArray(payload.calendar_events)) {
+    const batchCalendar = db.transaction((events: InboxCalendarEvent[]) => {
+      for (const ev of events) {
+        createCalendarEvent({
+          title: ev.title,
+          description: ev.description,
+          event_type: ev.event_type,
+          start_date: ev.start_date,
+          end_date: ev.end_date,
+          recurrence: ev.recurrence,
+          region: ev.region,
+          impact_score: ev.impact_score,
+          categories: JSON.stringify(ev.categories || []),
+          tags: JSON.stringify(ev.tags || []),
+          color: ev.color,
+          data_json: JSON.stringify(ev.data || {}),
+        });
+      }
+    });
+
+    batchCalendar(payload.calendar_events);
+  }
+
   // Log cron run if applicable
   if (payload.cron_config_id) {
-    const itemCount = (payload.trends?.length || 0) + (payload.words?.length || 0) + (payload.forum_posts?.length || 0) + (payload.apps?.length || 0);
+    const itemCount = (payload.trends?.length || 0) + (payload.words?.length || 0) + (payload.forum_posts?.length || 0) + (payload.apps?.length || 0) + (payload.calendar_events?.length || 0);
     db.prepare(`
       INSERT INTO cron_runs (cron_config_id, status, items_processed, started_at, completed_at)
       VALUES (?, 'success', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)

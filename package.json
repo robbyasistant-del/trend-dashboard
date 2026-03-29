@@ -11,7 +11,8 @@
     "seed:forums": "npx tsx scripts/seed-forums.ts",
     "seed:apps": "npx tsx scripts/seed-apps.ts",
     "seed:regions": "npx tsx scripts/seed-regions.ts",
-    "ingest": "npx tsx scripts/process-inbox.ts"
+    "ingest": "npx tsx scripts/process-inbox.ts",
+    "seed:calendar": "npx tsx scripts/seed-calendar.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.0.0",

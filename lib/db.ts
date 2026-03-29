@@ -377,6 +377,77 @@ function initTables(db: Database.Database) {
   } catch {
     db.exec("ALTER TABLE cron_runs ADD COLUMN output_file TEXT");
   }
+
+  // ── Calendar Trends tables ──────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS calendar_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      description TEXT,
+      event_type TEXT DEFAULT 'holiday',
+      start_date TEXT NOT NULL,
+      end_date TEXT,
+      recurrence TEXT DEFAULT 'once',
+      region TEXT DEFAULT 'global',
+      impact_score REAL DEFAULT 50,
+      categories TEXT DEFAULT '[]',
+      tags TEXT DEFAULT '[]',
+      color TEXT DEFAULT '#3b82f6',
+      data_json TEXT DEFAULT '{}',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS seasonal_patterns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT,
+      pattern_type TEXT DEFAULT 'weekly',
+      metric TEXT NOT NULL,
+      baseline REAL DEFAULT 0,
+      peak_value REAL DEFAULT 0,
+      peak_period TEXT,
+      trough_value REAL DEFAULT 0,
+      trough_period TEXT,
+      confidence REAL DEFAULT 0,
+      sample_size INTEGER DEFAULT 0,
+      data_json TEXT DEFAULT '{}',
+      detected_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS engagement_milestones (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      description TEXT,
+      milestone_type TEXT DEFAULT 'threshold',
+      entity_type TEXT,
+      entity_id INTEGER,
+      entity_name TEXT,
+      metric TEXT,
+      value REAL DEFAULT 0,
+      previous_value REAL DEFAULT 0,
+      threshold REAL DEFAULT 0,
+      calendar_event_id INTEGER REFERENCES calendar_events(id),
+      significance REAL DEFAULT 0,
+      detected_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_start_date ON calendar_events(start_date);
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_event_type ON calendar_events(event_type);
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_region ON calendar_events(region);
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_recurrence ON calendar_events(recurrence);
+    CREATE INDEX IF NOT EXISTS idx_calendar_events_impact ON calendar_events(impact_score DESC);
+    CREATE INDEX IF NOT EXISTS idx_seasonal_patterns_type ON seasonal_patterns(pattern_type);
+    CREATE INDEX IF NOT EXISTS idx_seasonal_patterns_metric ON seasonal_patterns(metric);
+    CREATE INDEX IF NOT EXISTS idx_seasonal_patterns_confidence ON seasonal_patterns(confidence DESC);
+    CREATE INDEX IF NOT EXISTS idx_milestones_type ON engagement_milestones(milestone_type);
+    CREATE INDEX IF NOT EXISTS idx_milestones_entity ON engagement_milestones(entity_type, entity_id);
+    CREATE INDEX IF NOT EXISTS idx_milestones_event_id ON engagement_milestones(calendar_event_id);
+    CREATE INDEX IF NOT EXISTS idx_milestones_detected ON engagement_milestones(detected_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_milestones_significance ON engagement_milestones(significance DESC);
+  `);
 }
 
 // ── Trend helpers ──────────────────────────────────────────────
@@ -1509,4 +1580,614 @@ export function upsertGeoTrendLink(data: { trend_id: number; region_code: string
     region_code: data.region_code,
     relevance_score: data.relevance_score ?? 1.0,
   });
+}
+
+// ── Calendar Events helpers ──────────────────────────────────
+
+export function getCalendarEvents(opts?: {
+  event_type?: string; region?: string; search?: string;
+  start_after?: string; start_before?: string;
+  limit?: number; offset?: number;
+}) {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.event_type) { conditions.push('event_type = @event_type'); params.event_type = opts.event_type; }
+  if (opts?.region) { conditions.push('region = @region'); params.region = opts.region; }
+  if (opts?.search) { conditions.push('(title LIKE @search OR description LIKE @search)'); params.search = '%' + opts.search + '%'; }
+  if (opts?.start_after) { conditions.push('start_date >= @start_after'); params.start_after = opts.start_after; }
+  if (opts?.start_before) { conditions.push('start_date <= @start_before'); params.start_before = opts.start_before; }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const limit = opts?.limit || 100;
+  const offset = opts?.offset || 0;
+
+  return db.prepare(`SELECT * FROM calendar_events ${where} ORDER BY start_date ASC LIMIT @limit OFFSET @offset`).all({ ...params, limit, offset });
+}
+
+export function getCalendarEventById(id: number) {
+  return getDb().prepare('SELECT * FROM calendar_events WHERE id = ?').get(id);
+}
+
+export function createCalendarEvent(data: {
+  title: string; description?: string; event_type?: string;
+  start_date: string; end_date?: string; recurrence?: string;
+  region?: string; impact_score?: number; categories?: string;
+  tags?: string; color?: string; data_json?: string;
+}) {
+  const db = getDb();
+  return db.prepare(`
+    INSERT INTO calendar_events (title, description, event_type, start_date, end_date, recurrence, region, impact_score, categories, tags, color, data_json)
+    VALUES (@title, @description, @event_type, @start_date, @end_date, @recurrence, @region, @impact_score, @categories, @tags, @color, @data_json)
+  `).run({
+    title: data.title,
+    description: data.description || null,
+    event_type: data.event_type || 'holiday',
+    start_date: data.start_date,
+    end_date: data.end_date || null,
+    recurrence: data.recurrence || 'once',
+    region: data.region || 'global',
+    impact_score: data.impact_score ?? 50,
+    categories: data.categories || '[]',
+    tags: data.tags || '[]',
+    color: data.color || '#3b82f6',
+    data_json: data.data_json || '{}',
+  });
+}
+
+export function updateCalendarEvent(id: number, data: Partial<{
+  title: string; description: string; event_type: string;
+  start_date: string; end_date: string; recurrence: string;
+  region: string; impact_score: number; categories: string;
+  tags: string; color: string; data_json: string;
+}>) {
+  const db = getDb();
+  const fields = Object.keys(data).map(k => `${k} = @${k}`).join(', ');
+  if (!fields) return;
+  return db.prepare(`UPDATE calendar_events SET ${fields}, updated_at = CURRENT_TIMESTAMP WHERE id = @id`).run({ ...data, id });
+}
+
+export function deleteCalendarEvent(id: number) {
+  return getDb().prepare('DELETE FROM calendar_events WHERE id = ?').run(id);
+}
+
+/** Expand recurring events into occurrences within a date range */
+export function getExpandedCalendarEvents(startDate: string, endDate: string): Array<Record<string, unknown>> {
+  const db = getDb();
+  // Get one-time events in range
+  const oneTime = db.prepare(`
+    SELECT * FROM calendar_events
+    WHERE recurrence = 'once' AND start_date >= @startDate AND start_date <= @endDate
+    ORDER BY start_date ASC
+  `).all({ startDate, endDate }) as Array<Record<string, unknown>>;
+
+  // Get recurring events (could start anytime)
+  const recurring = db.prepare(`
+    SELECT * FROM calendar_events WHERE recurrence != 'once'
+  `).all() as Array<Record<string, unknown>>;
+
+  const results = [...oneTime];
+  const rangeStart = new Date(startDate);
+  const rangeEnd = new Date(endDate);
+
+  for (const ev of recurring) {
+    const evStart = new Date(ev.start_date as string);
+    const recurrence = ev.recurrence as string;
+
+    // Generate occurrences within the range
+    const occurrences = generateOccurrences(evStart, recurrence, rangeStart, rangeEnd);
+    for (const occ of occurrences) {
+      results.push({ ...ev, start_date: occ.toISOString().slice(0, 10), _occurrence: true });
+    }
+  }
+
+  results.sort((a, b) => String(a.start_date).localeCompare(String(b.start_date)));
+  return results;
+}
+
+function generateOccurrences(eventStart: Date, recurrence: string, rangeStart: Date, rangeEnd: Date): Date[] {
+  const occurrences: Date[] = [];
+  const maxIterations = 500;
+  let current = new Date(eventStart);
+  let iterations = 0;
+
+  while (current <= rangeEnd && iterations < maxIterations) {
+    if (current >= rangeStart) {
+      occurrences.push(new Date(current));
+    }
+
+    switch (recurrence) {
+      case 'yearly':
+        current = new Date(current.getFullYear() + 1, current.getMonth(), current.getDate());
+        break;
+      case 'quarterly':
+        current = new Date(current.getFullYear(), current.getMonth() + 3, current.getDate());
+        break;
+      case 'monthly':
+        current = new Date(current.getFullYear(), current.getMonth() + 1, current.getDate());
+        break;
+      case 'weekly':
+        current = new Date(current.getTime() + 7 * 86400000);
+        break;
+      default:
+        return occurrences;
+    }
+    iterations++;
+  }
+  return occurrences;
+}
+
+export function getCalendarStats() {
+  const db = getDb();
+  const now = new Date().toISOString().slice(0, 10);
+  const weekFromNow = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  const monthFromNow = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+
+  const totalEvents = db.prepare('SELECT COUNT(*) as count FROM calendar_events').get() as { count: number };
+  const upcomingEvents = db.prepare('SELECT COUNT(*) as count FROM calendar_events WHERE start_date >= @now AND start_date <= @monthFromNow').get({ now, monthFromNow }) as { count: number };
+  const upcomingWeek = db.prepare('SELECT COUNT(*) as count FROM calendar_events WHERE start_date >= @now AND start_date <= @weekFromNow').get({ now, weekFromNow }) as { count: number };
+  const activePatterns = db.prepare('SELECT COUNT(*) as count FROM seasonal_patterns WHERE confidence >= 0.5').get() as { count: number };
+  const recentMilestones = db.prepare("SELECT COUNT(*) as count FROM engagement_milestones WHERE detected_at >= datetime('now', '-7 days')").get() as { count: number };
+
+  const eventsByType = db.prepare('SELECT event_type, COUNT(*) as count FROM calendar_events GROUP BY event_type ORDER BY count DESC').all();
+  const eventsByRegion = db.prepare('SELECT region, COUNT(*) as count FROM calendar_events GROUP BY region ORDER BY count DESC LIMIT 10').all();
+  const avgImpact = db.prepare('SELECT AVG(impact_score) as avg FROM calendar_events').get() as { avg: number };
+
+  // Next high-impact event
+  const nextHighImpact = db.prepare('SELECT * FROM calendar_events WHERE start_date >= @now AND impact_score >= 70 ORDER BY start_date ASC LIMIT 1').get({ now }) as Record<string, unknown> | undefined;
+
+  return {
+    totalEvents: totalEvents.count,
+    upcomingEvents: upcomingEvents.count,
+    upcomingWeek: upcomingWeek.count,
+    activePatterns: activePatterns.count,
+    recentMilestones: recentMilestones.count,
+    eventsByType,
+    eventsByRegion,
+    avgImpact: Math.round((avgImpact.avg || 0) * 100) / 100,
+    nextHighImpact: nextHighImpact || null,
+  };
+}
+
+// ── Seasonal Patterns helpers ──────────────────────────────────
+
+export function getSeasonalPatterns(opts?: { pattern_type?: string; metric?: string; min_confidence?: number; limit?: number }) {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.pattern_type) { conditions.push('pattern_type = @pattern_type'); params.pattern_type = opts.pattern_type; }
+  if (opts?.metric) { conditions.push('metric = @metric'); params.metric = opts.metric; }
+  if (opts?.min_confidence !== undefined) { conditions.push('confidence >= @min_confidence'); params.min_confidence = opts.min_confidence; }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const limit = opts?.limit || 50;
+
+  return db.prepare(`SELECT * FROM seasonal_patterns ${where} ORDER BY confidence DESC, peak_value DESC LIMIT @limit`).all({ ...params, limit });
+}
+
+export function createSeasonalPattern(data: {
+  name: string; description?: string; pattern_type?: string;
+  metric: string; baseline?: number; peak_value?: number;
+  peak_period?: string; trough_value?: number; trough_period?: string;
+  confidence?: number; sample_size?: number; data_json?: string;
+}) {
+  const db = getDb();
+  return db.prepare(`
+    INSERT INTO seasonal_patterns (name, description, pattern_type, metric, baseline, peak_value, peak_period, trough_value, trough_period, confidence, sample_size, data_json)
+    VALUES (@name, @description, @pattern_type, @metric, @baseline, @peak_value, @peak_period, @trough_value, @trough_period, @confidence, @sample_size, @data_json)
+  `).run({
+    name: data.name,
+    description: data.description || null,
+    pattern_type: data.pattern_type || 'weekly',
+    metric: data.metric,
+    baseline: data.baseline || 0,
+    peak_value: data.peak_value || 0,
+    peak_period: data.peak_period || null,
+    trough_value: data.trough_value || 0,
+    trough_period: data.trough_period || null,
+    confidence: data.confidence || 0,
+    sample_size: data.sample_size || 0,
+    data_json: data.data_json || '{}',
+  });
+}
+
+// ── Engagement Milestones helpers ──────────────────────────────
+
+export function getEngagementMilestones(opts?: {
+  milestone_type?: string; entity_type?: string;
+  min_significance?: number; limit?: number; offset?: number;
+}) {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.milestone_type) { conditions.push('milestone_type = @milestone_type'); params.milestone_type = opts.milestone_type; }
+  if (opts?.entity_type) { conditions.push('entity_type = @entity_type'); params.entity_type = opts.entity_type; }
+  if (opts?.min_significance !== undefined) { conditions.push('significance >= @min_significance'); params.min_significance = opts.min_significance; }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const limit = opts?.limit || 50;
+  const offset = opts?.offset || 0;
+
+  return db.prepare(`
+    SELECT em.*, ce.title as event_title, ce.start_date as event_date
+    FROM engagement_milestones em
+    LEFT JOIN calendar_events ce ON em.calendar_event_id = ce.id
+    ${where}
+    ORDER BY em.detected_at DESC, em.significance DESC
+    LIMIT @limit OFFSET @offset
+  `).all({ ...params, limit, offset });
+}
+
+export function createEngagementMilestone(data: {
+  title: string; description?: string; milestone_type?: string;
+  entity_type?: string; entity_id?: number; entity_name?: string;
+  metric?: string; value?: number; previous_value?: number;
+  threshold?: number; calendar_event_id?: number; significance?: number;
+}) {
+  const db = getDb();
+  return db.prepare(`
+    INSERT INTO engagement_milestones (title, description, milestone_type, entity_type, entity_id, entity_name, metric, value, previous_value, threshold, calendar_event_id, significance)
+    VALUES (@title, @description, @milestone_type, @entity_type, @entity_id, @entity_name, @metric, @value, @previous_value, @threshold, @calendar_event_id, @significance)
+  `).run({
+    title: data.title,
+    description: data.description || null,
+    milestone_type: data.milestone_type || 'threshold',
+    entity_type: data.entity_type || null,
+    entity_id: data.entity_id || null,
+    entity_name: data.entity_name || null,
+    metric: data.metric || null,
+    value: data.value || 0,
+    previous_value: data.previous_value || 0,
+    threshold: data.threshold || 0,
+    calendar_event_id: data.calendar_event_id || null,
+    significance: data.significance || 0,
+  });
+}
+
+// ── Pattern Detection ──────────────────────────────────────────
+
+export function detectSeasonalPatterns(): { patternsDetected: number } {
+  const db = getDb();
+  let patternsDetected = 0;
+
+  // Detect weekly patterns from trend snapshots
+  const weeklyData = db.prepare(`
+    SELECT strftime('%w', snapshot_at) as dow, AVG(viral_score) as avg_score, COUNT(*) as cnt
+    FROM trend_snapshots
+    WHERE snapshot_at >= datetime('now', '-90 days')
+    GROUP BY strftime('%w', snapshot_at)
+    HAVING cnt >= 5
+  `).all() as Array<{ dow: string; avg_score: number; cnt: number }>;
+
+  if (weeklyData.length >= 5) {
+    const scores = weeklyData.map(d => d.avg_score);
+    const baseline = scores.reduce((a, b) => a + b, 0) / scores.length;
+    const peak = weeklyData.reduce((a, b) => a.avg_score > b.avg_score ? a : b);
+    const trough = weeklyData.reduce((a, b) => a.avg_score < b.avg_score ? a : b);
+    const variance = scores.reduce((a, b) => a + Math.pow(b - baseline, 2), 0) / scores.length;
+    const confidence = Math.min(1, variance > 0 ? Math.sqrt(variance) / baseline : 0);
+
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    db.prepare(`
+      INSERT INTO seasonal_patterns (name, description, pattern_type, metric, baseline, peak_value, peak_period, trough_value, trough_period, confidence, sample_size, data_json)
+      VALUES (@name, @description, @pattern_type, @metric, @baseline, @peak_value, @peak_period, @trough_value, @trough_period, @confidence, @sample_size, @data_json)
+    `).run({
+      name: 'Weekly Viral Score Pattern',
+      description: 'Weekly variation in average viral scores across all trends',
+      pattern_type: 'weekly',
+      metric: 'viral_score',
+      baseline: Math.round(baseline * 100) / 100,
+      peak_value: Math.round(peak.avg_score * 100) / 100,
+      peak_period: dayNames[parseInt(peak.dow)] || peak.dow,
+      trough_value: Math.round(trough.avg_score * 100) / 100,
+      trough_period: dayNames[parseInt(trough.dow)] || trough.dow,
+      confidence: Math.round(confidence * 100) / 100,
+      sample_size: weeklyData.reduce((a, b) => a + b.cnt, 0),
+      data_json: JSON.stringify({ daily_averages: weeklyData }),
+    });
+    patternsDetected++;
+  }
+
+  // Detect monthly patterns from app downloads
+  const monthlyAppData = db.prepare(`
+    SELECT strftime('%m', recorded_at) as month, AVG(downloads) as avg_downloads, COUNT(*) as cnt
+    FROM app_snapshots
+    WHERE recorded_at >= datetime('now', '-365 days')
+    GROUP BY strftime('%m', recorded_at)
+    HAVING cnt >= 3
+  `).all() as Array<{ month: string; avg_downloads: number; cnt: number }>;
+
+  if (monthlyAppData.length >= 6) {
+    const vals = monthlyAppData.map(d => d.avg_downloads);
+    const baseline = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const peak = monthlyAppData.reduce((a, b) => a.avg_downloads > b.avg_downloads ? a : b);
+    const trough = monthlyAppData.reduce((a, b) => a.avg_downloads < b.avg_downloads ? a : b);
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    db.prepare(`
+      INSERT INTO seasonal_patterns (name, description, pattern_type, metric, baseline, peak_value, peak_period, trough_value, trough_period, confidence, sample_size, data_json)
+      VALUES (@name, @description, @pattern_type, @metric, @baseline, @peak_value, @peak_period, @trough_value, @trough_period, @confidence, @sample_size, @data_json)
+    `).run({
+      name: 'Monthly App Download Pattern',
+      description: 'Monthly variation in average app downloads',
+      pattern_type: 'monthly',
+      metric: 'downloads',
+      baseline: Math.round(baseline),
+      peak_value: Math.round(peak.avg_downloads),
+      peak_period: monthNames[parseInt(peak.month) - 1] || peak.month,
+      trough_value: Math.round(trough.avg_downloads),
+      trough_period: monthNames[parseInt(trough.month) - 1] || trough.month,
+      confidence: 0.7,
+      sample_size: monthlyAppData.reduce((a, b) => a + b.cnt, 0),
+      data_json: JSON.stringify({ monthly_averages: monthlyAppData }),
+    });
+    patternsDetected++;
+  }
+
+  return { patternsDetected };
+}
+
+// ── Milestone Detection ──────────────────────────────────────
+
+export function detectEngagementMilestones(): { milestonesDetected: number } {
+  const db = getDb();
+  let milestonesDetected = 0;
+
+  // Detect trends that crossed viral score thresholds
+  const thresholds = [50, 75, 90];
+  for (const threshold of thresholds) {
+    const trendsCrossing = db.prepare(`
+      SELECT t.id, t.title, t.viral_score,
+        (SELECT ts.viral_score FROM trend_snapshots ts WHERE ts.trend_id = t.id ORDER BY ts.snapshot_at DESC LIMIT 1 OFFSET 1) as prev_score
+      FROM trends t
+      WHERE t.viral_score >= @threshold
+      AND NOT EXISTS (
+        SELECT 1 FROM engagement_milestones em
+        WHERE em.entity_type = 'trend' AND em.entity_id = t.id AND em.threshold = @threshold
+      )
+      LIMIT 20
+    `).all({ threshold }) as Array<{ id: number; title: string; viral_score: number; prev_score: number | null }>;
+
+    for (const t of trendsCrossing) {
+      if (t.prev_score !== null && t.prev_score < threshold) {
+        // Find temporally correlated calendar event
+        const now = new Date().toISOString().slice(0, 10);
+        const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+        const nearbyEvent = db.prepare(`
+          SELECT id FROM calendar_events
+          WHERE start_date >= @weekAgo AND start_date <= @now
+          ORDER BY impact_score DESC LIMIT 1
+        `).get({ weekAgo, now }) as { id: number } | undefined;
+
+        db.prepare(`
+          INSERT INTO engagement_milestones (title, description, milestone_type, entity_type, entity_id, entity_name, metric, value, previous_value, threshold, calendar_event_id, significance)
+          VALUES (@title, @description, @milestone_type, @entity_type, @entity_id, @entity_name, @metric, @value, @previous_value, @threshold, @calendar_event_id, @significance)
+        `).run({
+          title: `${t.title} crossed ${threshold} viral score`,
+          description: `Trend "${t.title}" viral score went from ${t.prev_score} to ${t.viral_score}`,
+          milestone_type: 'threshold',
+          entity_type: 'trend',
+          entity_id: t.id,
+          entity_name: t.title,
+          metric: 'viral_score',
+          value: t.viral_score,
+          previous_value: t.prev_score,
+          threshold,
+          calendar_event_id: nearbyEvent?.id || null,
+          significance: Math.min(100, (t.viral_score / 100) * 80 + (threshold / 100) * 20),
+        });
+        milestonesDetected++;
+      }
+    }
+  }
+
+  // Detect app download spikes
+  const appSpikes = db.prepare(`
+    SELECT ae.id, ae.name, ae.downloads,
+      (SELECT AVG(asn.downloads) FROM app_snapshots asn WHERE asn.app_id = ae.id) as avg_downloads
+    FROM app_entries ae
+    WHERE ae.downloads > 0
+    AND NOT EXISTS (
+      SELECT 1 FROM engagement_milestones em
+      WHERE em.entity_type = 'app' AND em.entity_id = ae.id AND em.milestone_type = 'spike'
+        AND em.detected_at >= datetime('now', '-7 days')
+    )
+    HAVING avg_downloads > 0 AND ae.downloads > avg_downloads * 2
+    LIMIT 10
+  `).all() as Array<{ id: number; name: string; downloads: number; avg_downloads: number }>;
+
+  for (const app of appSpikes) {
+    db.prepare(`
+      INSERT INTO engagement_milestones (title, description, milestone_type, entity_type, entity_id, entity_name, metric, value, previous_value, threshold, significance)
+      VALUES (@title, @description, @milestone_type, @entity_type, @entity_id, @entity_name, @metric, @value, @previous_value, @threshold, @significance)
+    `).run({
+      title: `${app.name} download spike`,
+      description: `Downloads surged to ${app.downloads} (avg: ${Math.round(app.avg_downloads)})`,
+      milestone_type: 'spike',
+      entity_type: 'app',
+      entity_id: app.id,
+      entity_name: app.name,
+      metric: 'downloads',
+      value: app.downloads,
+      previous_value: Math.round(app.avg_downloads),
+      threshold: Math.round(app.avg_downloads * 2),
+      significance: Math.min(100, (app.downloads / Math.max(1, app.avg_downloads)) * 30),
+    });
+    milestonesDetected++;
+  }
+
+  return { milestonesDetected };
+}
+
+// ── Predictions ──────────────────────────────────────────────
+
+export interface CalendarPrediction {
+  event_id: number | null;
+  event_title: string;
+  predicted_date: string;
+  metric: string;
+  predicted_value: number;
+  confidence: number;
+  basis: string;
+  type: 'event_based' | 'pattern_based';
+}
+
+export function getCalendarPredictions(opts?: { days_ahead?: number; limit?: number }): CalendarPrediction[] {
+  const db = getDb();
+  const daysAhead = opts?.days_ahead || 30;
+  const limit = opts?.limit || 20;
+  const now = new Date();
+  const futureDate = new Date(Date.now() + daysAhead * 86400000).toISOString().slice(0, 10);
+  const today = now.toISOString().slice(0, 10);
+
+  const predictions: CalendarPrediction[] = [];
+
+  // Event-based predictions: upcoming events with high impact
+  const upcomingEvents = db.prepare(`
+    SELECT * FROM calendar_events
+    WHERE start_date >= @today AND start_date <= @futureDate
+    ORDER BY impact_score DESC
+    LIMIT @limit
+  `).all({ today, futureDate, limit }) as Array<Record<string, unknown>>;
+
+  for (const ev of upcomingEvents) {
+    const impactScore = (ev.impact_score as number) || 50;
+    // Predict viral score boost based on impact and historical patterns
+    const predictedBoost = impactScore * 0.8;
+    predictions.push({
+      event_id: ev.id as number,
+      event_title: ev.title as string,
+      predicted_date: ev.start_date as string,
+      metric: 'viral_score',
+      predicted_value: Math.round(predictedBoost * 100) / 100,
+      confidence: Math.min(0.95, impactScore / 120),
+      basis: `High-impact ${ev.event_type} event (score: ${impactScore})`,
+      type: 'event_based',
+    });
+  }
+
+  // Pattern-based predictions: use seasonal patterns
+  const patterns = db.prepare('SELECT * FROM seasonal_patterns WHERE confidence >= 0.4 ORDER BY confidence DESC LIMIT 10').all() as Array<Record<string, unknown>>;
+
+  for (const p of patterns) {
+    const patternType = p.pattern_type as string;
+    const peakPeriod = p.peak_period as string;
+    const peakValue = p.peak_value as number;
+    const conf = p.confidence as number;
+
+    if (patternType === 'weekly' && peakPeriod) {
+      const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const peakDayIdx = dayNames.indexOf(peakPeriod);
+      if (peakDayIdx >= 0) {
+        const nextPeakDate = new Date(now);
+        const daysUntilPeak = (peakDayIdx - now.getDay() + 7) % 7 || 7;
+        nextPeakDate.setDate(nextPeakDate.getDate() + daysUntilPeak);
+        if (nextPeakDate.toISOString().slice(0, 10) <= futureDate) {
+          predictions.push({
+            event_id: null,
+            event_title: p.name as string,
+            predicted_date: nextPeakDate.toISOString().slice(0, 10),
+            metric: p.metric as string,
+            predicted_value: peakValue,
+            confidence: conf,
+            basis: `Weekly pattern peaks on ${peakPeriod}`,
+            type: 'pattern_based',
+          });
+        }
+      }
+    }
+  }
+
+  predictions.sort((a, b) => a.predicted_date.localeCompare(b.predicted_date));
+  return predictions.slice(0, limit);
+}
+
+// ── Timeline ──────────────────────────────────────────────────
+
+export interface TimelineEntry {
+  id: number;
+  date: string;
+  title: string;
+  description: string | null;
+  type: 'event' | 'milestone' | 'prediction';
+  subtype: string;
+  impact: number;
+  color: string;
+  entity_link?: { type: string; id: number; name: string } | null;
+}
+
+export function getCalendarTimeline(opts?: { start_date?: string; end_date?: string; limit?: number }): TimelineEntry[] {
+  const db = getDb();
+  const startDate = opts?.start_date || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const endDate = opts?.end_date || new Date(Date.now() + 60 * 86400000).toISOString().slice(0, 10);
+  const limit = opts?.limit || 100;
+
+  const entries: TimelineEntry[] = [];
+
+  // Events
+  const events = db.prepare(`
+    SELECT * FROM calendar_events
+    WHERE start_date >= @startDate AND start_date <= @endDate
+    ORDER BY start_date ASC LIMIT @limit
+  `).all({ startDate, endDate, limit }) as Array<Record<string, unknown>>;
+
+  for (const ev of events) {
+    entries.push({
+      id: ev.id as number,
+      date: ev.start_date as string,
+      title: ev.title as string,
+      description: ev.description as string | null,
+      type: 'event',
+      subtype: ev.event_type as string,
+      impact: ev.impact_score as number,
+      color: ev.color as string || '#3b82f6',
+    });
+  }
+
+  // Milestones
+  const milestones = db.prepare(`
+    SELECT * FROM engagement_milestones
+    WHERE DATE(detected_at) >= @startDate AND DATE(detected_at) <= @endDate
+    ORDER BY detected_at DESC LIMIT @limit
+  `).all({ startDate, endDate, limit }) as Array<Record<string, unknown>>;
+
+  for (const m of milestones) {
+    entries.push({
+      id: m.id as number,
+      date: (m.detected_at as string).slice(0, 10),
+      title: m.title as string,
+      description: m.description as string | null,
+      type: 'milestone',
+      subtype: m.milestone_type as string,
+      impact: m.significance as number,
+      color: '#f59e0b',
+      entity_link: m.entity_type ? { type: m.entity_type as string, id: m.entity_id as number, name: m.entity_name as string } : null,
+    });
+  }
+
+  // Predictions (future only)
+  const today = new Date().toISOString().slice(0, 10);
+  if (endDate >= today) {
+    const predictions = getCalendarPredictions({ days_ahead: 60, limit: 20 });
+    for (const pred of predictions) {
+      if (pred.predicted_date >= startDate && pred.predicted_date <= endDate) {
+        entries.push({
+          id: pred.event_id || 0,
+          date: pred.predicted_date,
+          title: `📈 ${pred.event_title}`,
+          description: pred.basis,
+          type: 'prediction',
+          subtype: pred.type,
+          impact: Math.round(pred.confidence * 100),
+          color: '#8b5cf6',
+        });
+      }
+    }
+  }
+
+  entries.sort((a, b) => a.date.localeCompare(b.date));
+  return entries.slice(0, limit);
 }
