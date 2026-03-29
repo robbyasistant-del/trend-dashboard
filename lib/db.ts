@@ -448,6 +448,110 @@ function initTables(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_milestones_detected ON engagement_milestones(detected_at DESC);
     CREATE INDEX IF NOT EXISTS idx_milestones_significance ON engagement_milestones(significance DESC);
   `);
+
+  // ── Sprint 6: Cross-Platform Correlations ──────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS correlations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_type TEXT NOT NULL,
+      source_id INTEGER,
+      source_name TEXT NOT NULL,
+      target_type TEXT NOT NULL,
+      target_id INTEGER,
+      target_name TEXT NOT NULL,
+      correlation_type TEXT NOT NULL,
+      strength REAL DEFAULT 0,
+      detected_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      metadata TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_correlations_source ON correlations(source_type, source_id);
+    CREATE INDEX IF NOT EXISTS idx_correlations_target ON correlations(target_type, target_id);
+  `);
+
+  // ── Sprint 6: Velocity Alerts ──────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS velocity_alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity_type TEXT NOT NULL,
+      entity_id INTEGER,
+      entity_name TEXT NOT NULL,
+      velocity_score REAL DEFAULT 0,
+      acceleration REAL DEFAULT 0,
+      previous_score REAL DEFAULT 0,
+      alert_level TEXT DEFAULT 'low',
+      is_read INTEGER DEFAULT 0,
+      detected_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_velocity_alerts_level ON velocity_alerts(alert_level);
+    CREATE INDEX IF NOT EXISTS idx_velocity_alerts_detected ON velocity_alerts(detected_at DESC);
+  `);
+
+  // ── Sprint 6: Competitor Watch ─────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS competitors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      type TEXT DEFAULT 'studio',
+      website TEXT,
+      description TEXT,
+      tracked_since DATETIME DEFAULT CURRENT_TIMESTAMP,
+      enabled INTEGER DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS competitor_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      competitor_id INTEGER REFERENCES competitors(id),
+      app_count INTEGER DEFAULT 0,
+      total_downloads INTEGER DEFAULT 0,
+      avg_rating REAL DEFAULT 0,
+      market_share REAL DEFAULT 0,
+      snapshot_date DATE DEFAULT CURRENT_DATE,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_competitor_snapshots_competitor ON competitor_snapshots(competitor_id);
+    CREATE INDEX IF NOT EXISTS idx_competitor_snapshots_date ON competitor_snapshots(snapshot_date);
+  `);
+
+  // ── Auto-seed Calendar cron configs ─────────────────────────
+  const calendarCronCount = db.prepare("SELECT COUNT(*) as count FROM cron_configs WHERE target_dashboard = 'calendar'").get() as { count: number };
+  if (calendarCronCount.count < 3) {
+    const insertCron = db.prepare(`
+      INSERT OR IGNORE INTO cron_configs (name, description, prompt, schedule, agent, source_type, target_dashboard, enabled)
+      VALUES (@name, @description, @prompt, @schedule, @agent, @source_type, @target_dashboard, @enabled)
+    `);
+
+    insertCron.run({
+      name: 'Calendar Events Scanner',
+      description: 'Scan for upcoming gaming industry events, holidays, and sales periods that impact mobile gaming engagement.',
+      prompt: 'Search for upcoming gaming industry events, major holidays, app store sales, and cultural events that impact mobile gaming engagement. For each event found, provide: title, description, event_type (holiday/conference/sale/cultural/gaming/school), start_date, end_date, recurrence, region, impact_score (0-100), and relevant game categories. Output as JSON array of calendar_events.',
+      schedule: '0 6 * * 1',
+      agent: 'default',
+      source_type: 'scanner',
+      target_dashboard: 'calendar',
+      enabled: 1,
+    });
+
+    insertCron.run({
+      name: 'Pattern Detector',
+      description: 'Analyze historical engagement data to detect recurring seasonal patterns in viral scores, downloads, and forum activity.',
+      prompt: 'Analyze trend_snapshots, app_snapshots, and forum_posts tables for recurring patterns. Detect weekly patterns (day-of-week variations), monthly patterns (week-of-month), and seasonal patterns (quarter/month-of-year). For each pattern detected, compute baseline, peak, trough, and confidence score. Insert results into seasonal_patterns table.',
+      schedule: '0 2 * * 0',
+      agent: 'default',
+      source_type: 'detector',
+      target_dashboard: 'calendar',
+      enabled: 1,
+    });
+
+    insertCron.run({
+      name: 'Milestone Tracker',
+      description: 'Monitor engagement metrics across trends, apps, words, and forums for significant threshold crossings, spikes, and records.',
+      prompt: 'Check all tracked entities for engagement milestones. Look for: viral score threshold crossings (50/75/90), download spikes (>2x average), forum activity records, word frequency peaks, and region metric records. For each milestone, record the entity, metric, value, previous value, and attempt to correlate with recent calendar events. Insert results into engagement_milestones table.',
+      schedule: '0 */4 * * *',
+      agent: 'default',
+      source_type: 'detector',
+      target_dashboard: 'calendar',
+      enabled: 1,
+    });
+  }
 }
 
 // ── Trend helpers ──────────────────────────────────────────────
@@ -2190,4 +2294,465 @@ export function getCalendarTimeline(opts?: { start_date?: string; end_date?: str
 
   entries.sort((a, b) => a.date.localeCompare(b.date));
   return entries.slice(0, limit);
+}
+
+// ── Sprint 6: Cross-Platform Correlation helpers ──────────────
+
+export function getCorrelations(opts?: {
+  source_type?: string; target_type?: string; correlation_type?: string;
+  min_strength?: number; limit?: number; offset?: number;
+}) {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.source_type) { conditions.push('source_type = @source_type'); params.source_type = opts.source_type; }
+  if (opts?.target_type) { conditions.push('target_type = @target_type'); params.target_type = opts.target_type; }
+  if (opts?.correlation_type) { conditions.push('correlation_type = @correlation_type'); params.correlation_type = opts.correlation_type; }
+  if (opts?.min_strength !== undefined) { conditions.push('strength >= @min_strength'); params.min_strength = opts.min_strength; }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const limit = opts?.limit || 50;
+  const offset = opts?.offset || 0;
+
+  return db.prepare(`SELECT * FROM correlations ${where} ORDER BY strength DESC, detected_at DESC LIMIT @limit OFFSET @offset`).all({ ...params, limit, offset });
+}
+
+export function buildCorrelation(data: {
+  source_type: string; source_id?: number; source_name: string;
+  target_type: string; target_id?: number; target_name: string;
+  correlation_type: string; strength?: number; metadata?: string;
+}) {
+  const db = getDb();
+  return db.prepare(`
+    INSERT INTO correlations (source_type, source_id, source_name, target_type, target_id, target_name, correlation_type, strength, metadata)
+    VALUES (@source_type, @source_id, @source_name, @target_type, @target_id, @target_name, @correlation_type, @strength, @metadata)
+  `).run({
+    source_type: data.source_type,
+    source_id: data.source_id || null,
+    source_name: data.source_name,
+    target_type: data.target_type,
+    target_id: data.target_id || null,
+    target_name: data.target_name,
+    correlation_type: data.correlation_type,
+    strength: data.strength ?? 0,
+    metadata: data.metadata || null,
+  });
+}
+
+export function rebuildCorrelations(): { correlationsCreated: number } {
+  const db = getDb();
+  let correlationsCreated = 0;
+
+  const transaction = db.transaction(() => {
+    // Clear old auto-detected correlations
+    db.prepare("DELETE FROM correlations WHERE correlation_type IN ('keyword_match','topic_overlap','category_match')").run();
+
+    // Get all trends
+    const trends = db.prepare('SELECT id, title, description, category, tags FROM trends').all() as Array<{
+      id: number; title: string; description: string | null; category: string; tags: string;
+    }>;
+
+    // Get forum posts
+    const posts = db.prepare('SELECT id, title, body, category, source FROM forum_posts').all() as Array<{
+      id: number; title: string; body: string | null; category: string; source: string;
+    }>;
+
+    // Get apps
+    const apps = db.prepare('SELECT id, name, description, category, developer FROM app_entries').all() as Array<{
+      id: number; name: string; description: string | null; category: string; developer: string | null;
+    }>;
+
+    // Get words
+    const words = db.prepare('SELECT id, word, category, score FROM word_entries WHERE score > 10 ORDER BY score DESC LIMIT 200').all() as Array<{
+      id: number; word: string; category: string; score: number;
+    }>;
+
+    const wordSet = new Map<string, { id: number; score: number }>();
+    for (const w of words) {
+      wordSet.set(w.word.toLowerCase(), { id: w.id, score: w.score });
+    }
+
+    const insertCorr = db.prepare(`
+      INSERT INTO correlations (source_type, source_id, source_name, target_type, target_id, target_name, correlation_type, strength, metadata)
+      VALUES (@source_type, @source_id, @source_name, @target_type, @target_id, @target_name, @correlation_type, @strength, @metadata)
+    `);
+
+    // Trend → Forum: keyword match
+    for (const trend of trends) {
+      const trendTerms = extractTerms((trend.title || '') + ' ' + (trend.description || ''));
+      for (const post of posts) {
+        const postTerms = extractTerms((post.title || '') + ' ' + (post.body || ''));
+        const overlap = trendTerms.filter(t => postTerms.includes(t));
+        if (overlap.length >= 2) {
+          const strength = Math.min(1, overlap.length / 5);
+          insertCorr.run({
+            source_type: 'trend', source_id: trend.id, source_name: trend.title,
+            target_type: 'forum', target_id: post.id, target_name: post.title,
+            correlation_type: 'keyword_match', strength: Math.round(strength * 100) / 100,
+            metadata: JSON.stringify({ shared_keywords: overlap.slice(0, 10) }),
+          });
+          correlationsCreated++;
+          if (correlationsCreated > 500) break;
+        }
+      }
+      if (correlationsCreated > 500) break;
+    }
+
+    // Trend → App: keyword match
+    for (const trend of trends) {
+      const trendTerms = extractTerms((trend.title || '') + ' ' + (trend.description || ''));
+      for (const app of apps) {
+        const appTerms = extractTerms((app.name || '') + ' ' + (app.description || ''));
+        const overlap = trendTerms.filter(t => appTerms.includes(t));
+        if (overlap.length >= 2) {
+          const strength = Math.min(1, overlap.length / 5);
+          insertCorr.run({
+            source_type: 'trend', source_id: trend.id, source_name: trend.title,
+            target_type: 'app', target_id: app.id, target_name: app.name,
+            correlation_type: 'keyword_match', strength: Math.round(strength * 100) / 100,
+            metadata: JSON.stringify({ shared_keywords: overlap.slice(0, 10) }),
+          });
+          correlationsCreated++;
+        }
+      }
+    }
+
+    // Trend → Word: direct mention
+    for (const trend of trends) {
+      const trendTerms = extractTerms((trend.title || '') + ' ' + (trend.description || ''));
+      for (const term of trendTerms) {
+        const wordMatch = wordSet.get(term);
+        if (wordMatch) {
+          const strength = Math.min(1, wordMatch.score / 100);
+          insertCorr.run({
+            source_type: 'trend', source_id: trend.id, source_name: trend.title,
+            target_type: 'word', target_id: wordMatch.id, target_name: term,
+            correlation_type: 'keyword_match', strength: Math.round(strength * 100) / 100,
+            metadata: JSON.stringify({ word_score: wordMatch.score }),
+          });
+          correlationsCreated++;
+        }
+      }
+    }
+
+    // Forum → App: category match
+    for (const post of posts) {
+      for (const app of apps) {
+        if (post.category && app.category && post.category.toLowerCase() === app.category.toLowerCase()) {
+          const postTerms = extractTerms((post.title || '') + ' ' + (post.body || ''));
+          const appTerms = extractTerms((app.name || '') + ' ' + (app.description || ''));
+          const overlap = postTerms.filter(t => appTerms.includes(t));
+          if (overlap.length >= 1) {
+            insertCorr.run({
+              source_type: 'forum', source_id: post.id, source_name: post.title,
+              target_type: 'app', target_id: app.id, target_name: app.name,
+              correlation_type: 'category_match', strength: Math.round(Math.min(1, overlap.length / 3) * 100) / 100,
+              metadata: JSON.stringify({ category: post.category, shared_keywords: overlap.slice(0, 5) }),
+            });
+            correlationsCreated++;
+          }
+        }
+      }
+    }
+  });
+
+  transaction();
+  return { correlationsCreated };
+}
+
+// ── Sprint 6: Velocity Alerts helpers ─────────────────────────
+
+export function getVelocityAlerts(opts?: {
+  alert_level?: string; entity_type?: string; unread_only?: boolean;
+  limit?: number; offset?: number;
+}) {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.alert_level) { conditions.push('alert_level = @alert_level'); params.alert_level = opts.alert_level; }
+  if (opts?.entity_type) { conditions.push('entity_type = @entity_type'); params.entity_type = opts.entity_type; }
+  if (opts?.unread_only) { conditions.push('is_read = 0'); }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const limit = opts?.limit || 50;
+  const offset = opts?.offset || 0;
+
+  return db.prepare(`SELECT * FROM velocity_alerts ${where} ORDER BY detected_at DESC, velocity_score DESC LIMIT @limit OFFSET @offset`).all({ ...params, limit, offset });
+}
+
+export function getVelocityStats() {
+  const db = getDb();
+  const total = db.prepare('SELECT COUNT(*) as count FROM velocity_alerts').get() as { count: number };
+  const unread = db.prepare('SELECT COUNT(*) as count FROM velocity_alerts WHERE is_read = 0').get() as { count: number };
+  const critical = db.prepare("SELECT COUNT(*) as count FROM velocity_alerts WHERE alert_level = 'critical'").get() as { count: number };
+  const high = db.prepare("SELECT COUNT(*) as count FROM velocity_alerts WHERE alert_level = 'high'").get() as { count: number };
+  const medium = db.prepare("SELECT COUNT(*) as count FROM velocity_alerts WHERE alert_level = 'medium'").get() as { count: number };
+  const low = db.prepare("SELECT COUNT(*) as count FROM velocity_alerts WHERE alert_level = 'low'").get() as { count: number };
+  const avgVelocity = db.prepare('SELECT AVG(velocity_score) as avg FROM velocity_alerts').get() as { avg: number };
+  const topEntity = db.prepare('SELECT entity_name, velocity_score FROM velocity_alerts ORDER BY velocity_score DESC LIMIT 1').get() as { entity_name: string; velocity_score: number } | undefined;
+
+  return {
+    total: total.count,
+    unread: unread.count,
+    critical: critical.count,
+    high: high.count,
+    medium: medium.count,
+    low: low.count,
+    avgVelocity: Math.round((avgVelocity.avg || 0) * 100) / 100,
+    topEntity: topEntity || null,
+  };
+}
+
+export function markAlertRead(id: number) {
+  return getDb().prepare('UPDATE velocity_alerts SET is_read = 1 WHERE id = ?').run(id);
+}
+
+export function scanVelocity(): { alertsCreated: number } {
+  const db = getDb();
+  let alertsCreated = 0;
+
+  const transaction = db.transaction(() => {
+    // Scan trends for velocity changes
+    const trends = db.prepare(`
+      SELECT t.id, t.title, t.viral_score, t.velocity,
+        (SELECT ts.viral_score FROM trend_snapshots ts WHERE ts.trend_id = t.id ORDER BY ts.snapshot_at DESC LIMIT 1 OFFSET 1) as prev_score
+      FROM trends t
+      WHERE t.viral_score > 0
+    `).all() as Array<{ id: number; title: string; viral_score: number; velocity: number; prev_score: number | null }>;
+
+    const insertAlert = db.prepare(`
+      INSERT INTO velocity_alerts (entity_type, entity_id, entity_name, velocity_score, acceleration, previous_score, alert_level)
+      VALUES (@entity_type, @entity_id, @entity_name, @velocity_score, @acceleration, @previous_score, @alert_level)
+    `);
+
+    for (const t of trends) {
+      const prevScore = t.prev_score ?? 0;
+      const delta = t.viral_score - prevScore;
+      const velocityScore = Math.abs(delta);
+      const acceleration = prevScore > 0 ? (delta / prevScore) * 100 : (delta > 0 ? 100 : 0);
+
+      if (velocityScore < 5) continue;
+
+      let alertLevel = 'low';
+      if (velocityScore >= 30 || Math.abs(acceleration) >= 100) alertLevel = 'critical';
+      else if (velocityScore >= 20 || Math.abs(acceleration) >= 50) alertLevel = 'high';
+      else if (velocityScore >= 10 || Math.abs(acceleration) >= 25) alertLevel = 'medium';
+
+      // Avoid duplicate alerts for the same entity
+      const existing = db.prepare(
+        "SELECT id FROM velocity_alerts WHERE entity_type = 'trend' AND entity_id = @id AND detected_at >= datetime('now', '-1 day')"
+      ).get({ id: t.id });
+      if (existing) continue;
+
+      insertAlert.run({
+        entity_type: 'trend',
+        entity_id: t.id,
+        entity_name: t.title,
+        velocity_score: Math.round(velocityScore * 100) / 100,
+        acceleration: Math.round(acceleration * 100) / 100,
+        previous_score: prevScore,
+        alert_level: alertLevel,
+      });
+      alertsCreated++;
+    }
+
+    // Scan apps for download velocity
+    const apps = db.prepare(`
+      SELECT ae.id, ae.name, ae.downloads,
+        (SELECT asn.downloads FROM app_snapshots asn WHERE asn.app_id = ae.id ORDER BY asn.recorded_at DESC LIMIT 1 OFFSET 1) as prev_downloads
+      FROM app_entries ae
+      WHERE ae.downloads > 0
+    `).all() as Array<{ id: number; name: string; downloads: number; prev_downloads: number | null }>;
+
+    for (const app of apps) {
+      const prevDl = app.prev_downloads ?? 0;
+      const delta = app.downloads - prevDl;
+      if (delta <= 0 || prevDl === 0) continue;
+
+      const acceleration = (delta / Math.max(1, prevDl)) * 100;
+      if (acceleration < 20) continue;
+
+      const existing = db.prepare(
+        "SELECT id FROM velocity_alerts WHERE entity_type = 'app' AND entity_id = @id AND detected_at >= datetime('now', '-1 day')"
+      ).get({ id: app.id });
+      if (existing) continue;
+
+      let alertLevel = 'low';
+      if (acceleration >= 200) alertLevel = 'critical';
+      else if (acceleration >= 100) alertLevel = 'high';
+      else if (acceleration >= 50) alertLevel = 'medium';
+
+      insertAlert.run({
+        entity_type: 'app',
+        entity_id: app.id,
+        entity_name: app.name,
+        velocity_score: Math.round(delta * 100) / 100,
+        acceleration: Math.round(acceleration * 100) / 100,
+        previous_score: prevDl,
+        alert_level: alertLevel,
+      });
+      alertsCreated++;
+    }
+
+    // Scan forum posts for score velocity
+    const hotPosts = db.prepare(`
+      SELECT id, title, score FROM forum_posts WHERE score >= 50 ORDER BY score DESC LIMIT 100
+    `).all() as Array<{ id: number; title: string; score: number }>;
+
+    for (const post of hotPosts) {
+      if (post.score < 50) continue;
+      const existing = db.prepare(
+        "SELECT id FROM velocity_alerts WHERE entity_type = 'forum' AND entity_id = @id AND detected_at >= datetime('now', '-1 day')"
+      ).get({ id: post.id });
+      if (existing) continue;
+
+      let alertLevel = 'low';
+      if (post.score >= 500) alertLevel = 'critical';
+      else if (post.score >= 200) alertLevel = 'high';
+      else if (post.score >= 100) alertLevel = 'medium';
+
+      insertAlert.run({
+        entity_type: 'forum',
+        entity_id: post.id,
+        entity_name: post.title,
+        velocity_score: post.score,
+        acceleration: 0,
+        previous_score: 0,
+        alert_level: alertLevel,
+      });
+      alertsCreated++;
+    }
+  });
+
+  transaction();
+  return { alertsCreated };
+}
+
+// ── Sprint 6: Competitor Watch helpers ────────────────────────
+
+export function getCompetitors(opts?: { enabled_only?: boolean; search?: string; type?: string; limit?: number; offset?: number }) {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.enabled_only) { conditions.push('enabled = 1'); }
+  if (opts?.search) { conditions.push('(name LIKE @search OR description LIKE @search)'); params.search = '%' + opts.search + '%'; }
+  if (opts?.type) { conditions.push('type = @type'); params.type = opts.type; }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const limit = opts?.limit || 50;
+  const offset = opts?.offset || 0;
+
+  return db.prepare(`SELECT * FROM competitors ${where} ORDER BY name ASC LIMIT @limit OFFSET @offset`).all({ ...params, limit, offset });
+}
+
+export function createCompetitor(data: {
+  name: string; type?: string; website?: string; description?: string; enabled?: number;
+}) {
+  const db = getDb();
+  return db.prepare(`
+    INSERT INTO competitors (name, type, website, description, enabled)
+    VALUES (@name, @type, @website, @description, @enabled)
+  `).run({
+    name: data.name,
+    type: data.type || 'studio',
+    website: data.website || null,
+    description: data.description || null,
+    enabled: data.enabled ?? 1,
+  });
+}
+
+export function updateCompetitor(id: number, data: Partial<{
+  name: string; type: string; website: string; description: string; enabled: number;
+}>) {
+  const db = getDb();
+  const fields = Object.keys(data).map(k => `${k} = @${k}`).join(', ');
+  if (!fields) return;
+  return db.prepare(`UPDATE competitors SET ${fields} WHERE id = @id`).run({ ...data, id });
+}
+
+export function deleteCompetitor(id: number) {
+  const db = getDb();
+  db.prepare('DELETE FROM competitor_snapshots WHERE competitor_id = ?').run(id);
+  return db.prepare('DELETE FROM competitors WHERE id = ?').run(id);
+}
+
+export function getCompetitorDetail(id: number) {
+  const db = getDb();
+  const competitor = db.prepare('SELECT * FROM competitors WHERE id = ?').get(id);
+  const latestSnapshot = db.prepare('SELECT * FROM competitor_snapshots WHERE competitor_id = ? ORDER BY snapshot_date DESC LIMIT 1').get(id);
+  const snapshotCount = db.prepare('SELECT COUNT(*) as count FROM competitor_snapshots WHERE competitor_id = ?').get(id) as { count: number };
+  return { competitor, latestSnapshot, snapshotCount: snapshotCount.count };
+}
+
+export function getCompetitorHistory(id: number) {
+  const db = getDb();
+  const competitor = db.prepare('SELECT * FROM competitors WHERE id = ?').get(id);
+  const snapshots = db.prepare('SELECT * FROM competitor_snapshots WHERE competitor_id = ? ORDER BY snapshot_date ASC').all(id);
+  return { competitor, snapshots };
+}
+
+export function getCompetitorLeaderboard() {
+  const db = getDb();
+  return db.prepare(`
+    SELECT c.*, cs.app_count, cs.total_downloads, cs.avg_rating, cs.market_share, cs.snapshot_date
+    FROM competitors c
+    LEFT JOIN competitor_snapshots cs ON cs.competitor_id = c.id
+      AND cs.snapshot_date = (SELECT MAX(cs2.snapshot_date) FROM competitor_snapshots cs2 WHERE cs2.competitor_id = c.id)
+    WHERE c.enabled = 1
+    ORDER BY cs.total_downloads DESC, cs.app_count DESC
+  `).all();
+}
+
+export function insertCompetitorSnapshot(data: {
+  competitor_id: number; app_count?: number; total_downloads?: number;
+  avg_rating?: number; market_share?: number; snapshot_date?: string;
+}) {
+  const db = getDb();
+  return db.prepare(`
+    INSERT INTO competitor_snapshots (competitor_id, app_count, total_downloads, avg_rating, market_share, snapshot_date)
+    VALUES (@competitor_id, @app_count, @total_downloads, @avg_rating, @market_share, @snapshot_date)
+  `).run({
+    competitor_id: data.competitor_id,
+    app_count: data.app_count || 0,
+    total_downloads: data.total_downloads || 0,
+    avg_rating: data.avg_rating || 0,
+    market_share: data.market_share || 0,
+    snapshot_date: data.snapshot_date || new Date().toISOString().slice(0, 10),
+  });
+}
+
+// ── Sprint 6: Home Dashboard helpers ──────────────────────────
+
+export function getHomeDashboardStats() {
+  const db = getDb();
+  const totalTrends = db.prepare('SELECT COUNT(*) as count FROM trends').get() as { count: number };
+  const activeAlerts = db.prepare('SELECT COUNT(*) as count FROM velocity_alerts WHERE is_read = 0').get() as { count: number };
+
+  const now = new Date().toISOString().slice(0, 10);
+  const weekFromNow = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  const upcomingEvents = db.prepare('SELECT COUNT(*) as count FROM calendar_events WHERE start_date >= @now AND start_date <= @weekFromNow').get({ now, weekFromNow }) as { count: number };
+  const trackedCompetitors = db.prepare('SELECT COUNT(*) as count FROM competitors WHERE enabled = 1').get() as { count: number };
+
+  return {
+    totalTrends: totalTrends.count,
+    activeAlerts: activeAlerts.count,
+    upcomingEvents: upcomingEvents.count,
+    trackedCompetitors: trackedCompetitors.count,
+  };
+}
+
+export function getTopTrendingItems(limit = 10) {
+  const db = getDb();
+  const trends = db.prepare('SELECT id, title, viral_score, category, lifecycle FROM trends ORDER BY viral_score DESC LIMIT ?').all(limit) as Array<Record<string, unknown>>;
+  return trends.map(t => ({ ...t, source: 'trend' }));
+}
+
+export function getUpcomingCalendarEvents(days = 7) {
+  const db = getDb();
+  const now = new Date().toISOString().slice(0, 10);
+  const future = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+  return db.prepare('SELECT * FROM calendar_events WHERE start_date >= @now AND start_date <= @future ORDER BY start_date ASC LIMIT 10').all({ now, future });
 }
