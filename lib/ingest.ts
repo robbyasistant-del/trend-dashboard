@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { getDb } from './db';
+import { getDb, crossReferenceForumWords } from './db';
 
 const INBOX_DIR = path.join(process.cwd(), 'data', 'inbox');
 
@@ -255,6 +255,9 @@ export function ingestPayload(payload: InboxPayload) {
 
     // Update post count on forum source
     db.prepare('UPDATE forum_sources SET post_count = (SELECT COUNT(*) FROM forum_posts WHERE source = ?), last_scraped = CURRENT_TIMESTAMP WHERE name = ?').run(forumSourceName, forumSourceName);
+
+    // Cross-reference forum posts with word trends
+    try { crossReferenceForumWords(); } catch { /* non-critical */ }
   }
 
   // Log cron run if applicable

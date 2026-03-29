@@ -115,5 +115,64 @@ const insertTopics = db.transaction(() => {
 insertTopics();
 console.log(`  ✅ ${topics.length} forum topics created`);
 
+// ── Cron Configs for Forum Scanners ──────────────────────
+const cronConfigs = [
+  {
+    name: 'Reddit Gaming Scanner',
+    description: 'Scans r/gaming, r/indiegames, r/casualgames for trending posts and discussions about casual/indie games.',
+    prompt: 'Scan Reddit gaming subreddits (r/gaming, r/indiegames, r/casualgames) for trending posts about casual games, indie games, mobile games, and game development. Extract post title, body, author, score, comments, sentiment, tags. Output as JSON with target: "forums" and forum_posts array.',
+    schedule: '0 */4 * * *',
+    agent: 'default',
+    source_type: 'reddit',
+    target_dashboard: 'forums',
+    enabled: 1,
+  },
+  {
+    name: 'Hacker News Gaming Scanner',
+    description: 'Monitors Hacker News for gaming-related posts, game tech, WebGPU, game engines, and indie game launches.',
+    prompt: 'Scan Hacker News front page and new posts for gaming-related content: game launches, game engines (Unity, Godot, Unreal), WebGPU, browser games, game AI, monetization analysis. Extract title, URL, score, comments, sentiment. Output as JSON with target: "forums" and forum_posts array.',
+    schedule: '30 */6 * * *',
+    agent: 'default',
+    source_type: 'hackernews',
+    target_dashboard: 'forums',
+    enabled: 1,
+  },
+  {
+    name: 'Gaming Blogs Scanner',
+    description: 'Aggregates posts from TouchArcade, PocketGamer, Gamasutra, Deconstructor of Fun, and other gaming blogs.',
+    prompt: 'Scan gaming blogs and news sites (TouchArcade, PocketGamer, Gamasutra, Deconstructor of Fun) for articles about casual games, mobile gaming trends, game analysis, and postmortems. Extract title, body excerpt, URL, sentiment, tags. Output as JSON with target: "forums" and forum_posts array.',
+    schedule: '0 8,20 * * *',
+    agent: 'default',
+    source_type: 'blog',
+    target_dashboard: 'forums',
+    enabled: 1,
+  },
+  {
+    name: 'Forum Topic Aggregator',
+    description: 'Aggregates forum posts into topics, calculates trending scores, cross-references with word trends, and updates topic rankings.',
+    prompt: 'Analyze all recent forum posts from the last 24 hours. Group them into topics by common themes, calculate average sentiment and engagement per topic, identify trending topics, and cross-reference key terms with word_entries. Update forum_topics with aggregated data. Trigger the cross-reference endpoint at /api/forums/cross-reference after processing.',
+    schedule: '0 */2 * * *',
+    agent: 'default',
+    source_type: 'aggregator',
+    target_dashboard: 'forums',
+    enabled: 1,
+  },
+];
+
+const insertCron = db.prepare(`
+  INSERT OR IGNORE INTO cron_configs (name, description, prompt, schedule, agent, source_type, target_dashboard, enabled)
+  VALUES (@name, @description, @prompt, @schedule, @agent, @source_type, @target_dashboard, @enabled)
+`);
+
+let cronsInserted = 0;
+for (const c of cronConfigs) {
+  const existing = db.prepare('SELECT id FROM cron_configs WHERE name = ?').get(c.name);
+  if (!existing) {
+    insertCron.run(c);
+    cronsInserted++;
+  }
+}
+console.log(`  ✅ ${cronsInserted} cron configs created (${cronConfigs.length - cronsInserted} already existed)`);
+
 console.log('✅ Forum seed complete!');
 db.close();

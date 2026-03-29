@@ -654,3 +654,100 @@ export function upsertForumTopic(data: {
     is_trending: data.is_trending || 0,
   });
 }
+
+// ── Forum Cross-Reference ──────────────────────────────────────
+
+const STOP_WORDS = new Set([
+  'the','a','an','and','or','but','in','on','at','to','for','of','with','by','from','is','it',
+  'was','are','were','be','been','being','have','has','had','do','does','did','will','would',
+  'could','should','may','might','shall','can','need','must','this','that','these','those',
+  'i','me','my','we','our','you','your','he','she','they','them','their','its','who','what',
+  'which','when','where','how','why','not','no','so','if','then','than','too','very','just',
+  'about','up','out','into','over','after','before','between','under','again','more','most',
+  'other','some','such','only','same','also','new','one','two','first','last','get','got',
+  'all','any','each','every','both','few','many','much','own','still','back','even','here',
+  'there','now','really','like','game','games','gaming',
+]);
+
+function extractTerms(text: string): string[] {
+  if (!text) return [];
+  const words = text.toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 3 && !STOP_WORDS.has(w));
+  return Array.from(new Set(words));
+}
+
+export function crossReferenceForumWords(): { postsUpdated: number; wordsLinked: number; frequenciesCreated: number } {
+  const db = getDb();
+  let postsUpdated = 0;
+  let wordsLinked = 0;
+  let frequenciesCreated = 0;
+
+  // Get trending/high-score words from word_entries
+  const trendingWords = db.prepare('SELECT id, word, score, source FROM word_entries WHERE score > 20 OR growth > 5 ORDER BY score DESC LIMIT 200').all() as Array<{ id: number; word: string; score: number; source: string }>;
+  const trendingWordMap = new Map<string, { id: number; score: number }>();
+  for (const w of trendingWords) {
+    trendingWordMap.set(w.word.toLowerCase(), { id: w.id, score: w.score });
+  }
+
+  // Get all forum posts
+  const posts = db.prepare('SELECT id, title, body, source FROM forum_posts').all() as Array<{ id: number; title: string; body: string; source: string }>;
+
+  const today = new Date().toISOString().slice(0, 10);
+  const updateHotWords = db.prepare('UPDATE forum_posts SET hot_words = @hot_words, updated_at = CURRENT_TIMESTAMP WHERE id = @id');
+
+  // Word frequency tracking: word_id -> { freq, sources }
+  const wordFreqMap = new Map<number, { freq: number; sources: Set<string> }>();
+
+  const transaction = db.transaction(() => {
+    for (const post of posts) {
+      const terms = extractTerms((post.title || '') + ' ' + (post.body || ''));
+      const hotWords: string[] = [];
+
+      for (const term of terms) {
+        const match = trendingWordMap.get(term);
+        if (match) {
+          hotWords.push(term);
+          wordsLinked++;
+
+          const existing = wordFreqMap.get(match.id);
+          if (existing) {
+            existing.freq++;
+            existing.sources.add(post.source);
+          } else {
+            const srcSet = new Set<string>();
+            srcSet.add(post.source);
+            wordFreqMap.set(match.id, { freq: 1, sources: srcSet });
+          }
+        }
+      }
+
+      if (hotWords.length > 0) {
+        updateHotWords.run({ id: post.id, hot_words: JSON.stringify(hotWords) });
+        postsUpdated++;
+      }
+    }
+
+    // Create word_frequencies entries with source="forums"
+    const upsertFreq = db.prepare(`
+      INSERT INTO word_frequencies (word_id, frequency, mentions, period, period_type)
+      VALUES (@word_id, @frequency, @mentions, @period, @period_type)
+    `);
+
+    for (const [wordId, data] of wordFreqMap) {
+      upsertFreq.run({
+        word_id: wordId,
+        frequency: data.freq,
+        mentions: data.freq,
+        period: today,
+        period_type: 'daily',
+      });
+      frequenciesCreated++;
+    }
+  });
+
+  transaction();
+
+  return { postsUpdated, wordsLinked, frequenciesCreated };
+}
