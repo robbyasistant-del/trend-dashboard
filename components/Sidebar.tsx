@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 
 const NAV_ITEMS = [
   { href: '/trends', label: 'Viral Trends', icon: '🔥', active: true },
-  { href: '/regions', label: 'Region Analysis', icon: '🗺️', active: false },
+  { href: '/regions', label: 'Region Analysis', icon: '🗺️', active: true },
   { href: '/calendar', label: 'Calendar Trends', icon: '📅', active: false },
   { href: '/words', label: 'Words Trends', icon: '💬', active: true },
   { href: '/forums', label: 'Games Forums', icon: '🎮', active: true },
