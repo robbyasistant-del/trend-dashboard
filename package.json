@@ -8,6 +8,7 @@
     "start": "next start -p 4002",
     "seed": "npx tsx scripts/seed.ts",
     "seed:words": "npx tsx scripts/seed-words.ts",
+    "seed:forums": "npx tsx scripts/seed-forums.ts",
     "ingest": "npx tsx scripts/process-inbox.ts"
   },
   "dependencies": {

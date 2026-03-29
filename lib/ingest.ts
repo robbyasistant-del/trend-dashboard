@@ -31,11 +31,28 @@ export interface InboxWord {
   data?: Record<string, unknown>;
 }
 
+export interface InboxForumPost {
+  external_id: string;
+  title: string;
+  body?: string;
+  author?: string;
+  url?: string;
+  score?: number;
+  comments?: number;
+  sentiment?: number;
+  category?: string;
+  tags?: string[];
+  is_trending?: boolean;
+  published_at?: string;
+  data?: Record<string, unknown>;
+}
+
 export interface InboxPayload {
   source?: string;
   target?: string;
   trends?: InboxTrend[];
   words?: InboxWord[];
+  forum_posts?: InboxForumPost[];
   cron_config_id?: number;
 }
 
@@ -188,9 +205,61 @@ export function ingestPayload(payload: InboxPayload) {
     batchWords(payload.words);
   }
 
+  // ── Forums ingestion ──────────────────────────────────────────
+  if ((payload.target === 'forums' || payload.forum_posts) && payload.forum_posts && Array.isArray(payload.forum_posts)) {
+    // Ensure forum source exists
+    const forumSourceName = payload.source || 'unknown';
+    const existingForumSource = db.prepare('SELECT id FROM forum_sources WHERE name = ?').get(forumSourceName) as { id: number } | undefined;
+    let forumSourceId: number | null = existingForumSource?.id || null;
+    if (!existingForumSource) {
+      const res = db.prepare('INSERT INTO forum_sources (name, type) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET updated_at = CURRENT_TIMESTAMP').run(forumSourceName, 'forum');
+      forumSourceId = Number(res.lastInsertRowid) || null;
+    }
+
+    const upsertPost = db.prepare(`
+      INSERT INTO forum_posts (external_id, source, source_id, title, body, author, url, score, comments, sentiment, category, tags, is_trending, data_json, published_at)
+      VALUES (@external_id, @source, @source_id, @title, @body, @author, @url, @score, @comments, @sentiment, @category, @tags, @is_trending, @data_json, @published_at)
+      ON CONFLICT(external_id, source) DO UPDATE SET
+        title = @title,
+        body = @body,
+        score = @score,
+        comments = @comments,
+        sentiment = @sentiment,
+        is_trending = @is_trending,
+        updated_at = CURRENT_TIMESTAMP
+    `);
+
+    const batchForumPosts = db.transaction((posts: InboxForumPost[]) => {
+      for (const p of posts) {
+        upsertPost.run({
+          external_id: p.external_id,
+          source: forumSourceName,
+          source_id: forumSourceId,
+          title: p.title,
+          body: p.body || null,
+          author: p.author || null,
+          url: p.url || null,
+          score: p.score || 0,
+          comments: p.comments || 0,
+          sentiment: p.sentiment || 0,
+          category: p.category || 'general',
+          tags: JSON.stringify(p.tags || []),
+          is_trending: p.is_trending ? 1 : 0,
+          data_json: JSON.stringify(p.data || {}),
+          published_at: p.published_at || null,
+        });
+      }
+    });
+
+    batchForumPosts(payload.forum_posts);
+
+    // Update post count on forum source
+    db.prepare('UPDATE forum_sources SET post_count = (SELECT COUNT(*) FROM forum_posts WHERE source = ?), last_scraped = CURRENT_TIMESTAMP WHERE name = ?').run(forumSourceName, forumSourceName);
+  }
+
   // Log cron run if applicable
   if (payload.cron_config_id) {
-    const itemCount = (payload.trends?.length || 0) + (payload.words?.length || 0);
+    const itemCount = (payload.trends?.length || 0) + (payload.words?.length || 0) + (payload.forum_posts?.length || 0);
     db.prepare(`
       INSERT INTO cron_runs (cron_config_id, status, items_processed, started_at, completed_at)
       VALUES (?, 'success', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)

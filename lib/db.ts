@@ -158,6 +158,71 @@ function initTables(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_word_competitions_word_a ON word_competitions(word_a_id);
     CREATE INDEX IF NOT EXISTS idx_word_competitions_word_b ON word_competitions(word_b_id);
     CREATE INDEX IF NOT EXISTS idx_word_clusters_category ON word_clusters(category);
+
+    -- Forum tables
+    CREATE TABLE IF NOT EXISTS forum_sources (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      type TEXT NOT NULL DEFAULT 'forum',
+      url TEXT,
+      icon TEXT,
+      description TEXT,
+      enabled INTEGER DEFAULT 1,
+      scrape_config TEXT DEFAULT '{}',
+      last_scraped DATETIME,
+      post_count INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS forum_posts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      external_id TEXT,
+      source TEXT NOT NULL,
+      source_id INTEGER REFERENCES forum_sources(id),
+      title TEXT NOT NULL,
+      body TEXT,
+      author TEXT,
+      url TEXT,
+      score INTEGER DEFAULT 0,
+      comments INTEGER DEFAULT 0,
+      sentiment REAL DEFAULT 0,
+      category TEXT DEFAULT 'general',
+      tags TEXT DEFAULT '[]',
+      is_trending INTEGER DEFAULT 0,
+      hot_words TEXT DEFAULT '[]',
+      data_json TEXT DEFAULT '{}',
+      published_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(external_id, source)
+    );
+
+    CREATE TABLE IF NOT EXISTS forum_topics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      post_count INTEGER DEFAULT 0,
+      avg_sentiment REAL DEFAULT 0,
+      avg_score REAL DEFAULT 0,
+      sources TEXT DEFAULT '[]',
+      is_trending INTEGER DEFAULT 0,
+      first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_forum_posts_source ON forum_posts(source);
+    CREATE INDEX IF NOT EXISTS idx_forum_posts_external_id ON forum_posts(external_id);
+    CREATE INDEX IF NOT EXISTS idx_forum_posts_category ON forum_posts(category);
+    CREATE INDEX IF NOT EXISTS idx_forum_posts_score ON forum_posts(score DESC);
+    CREATE INDEX IF NOT EXISTS idx_forum_posts_sentiment ON forum_posts(sentiment);
+    CREATE INDEX IF NOT EXISTS idx_forum_posts_is_trending ON forum_posts(is_trending);
+    CREATE INDEX IF NOT EXISTS idx_forum_posts_published_at ON forum_posts(published_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_forum_topics_slug ON forum_topics(slug);
+    CREATE INDEX IF NOT EXISTS idx_forum_topics_is_trending ON forum_topics(is_trending);
+    CREATE INDEX IF NOT EXISTS idx_forum_sources_enabled ON forum_sources(enabled);
   `);
 
   // Migration: add target_dashboard column if missing (for existing DBs)
@@ -431,5 +496,161 @@ export function upsertWordCompetition(data: { word_a_id: number; word_b_id: numb
     overlap_score: data.overlap_score,
     context: data.context || null,
     category: data.category || null,
+  });
+}
+
+// ── Forum helpers ──────────────────────────────────────────────
+
+export function getForumPosts(opts?: { source?: string; category?: string; search?: string; trending?: boolean; limit?: number; offset?: number; sort?: string }) {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.source) { conditions.push('source = @source'); params.source = opts.source; }
+  if (opts?.category) { conditions.push('category = @category'); params.category = opts.category; }
+  if (opts?.search) { conditions.push('(title LIKE @search OR body LIKE @search)'); params.search = '%' + opts.search + '%'; }
+  if (opts?.trending) { conditions.push('is_trending = 1'); }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const limit = opts?.limit || 50;
+  const offset = opts?.offset || 0;
+
+  let orderBy = 'published_at DESC, score DESC';
+  if (opts?.sort === 'score') orderBy = 'score DESC';
+  if (opts?.sort === 'comments') orderBy = 'comments DESC';
+  if (opts?.sort === 'sentiment') orderBy = 'sentiment DESC';
+  if (opts?.sort === 'newest') orderBy = 'published_at DESC';
+
+  return db.prepare(`SELECT * FROM forum_posts ${where} ORDER BY ${orderBy} LIMIT @limit OFFSET @offset`).all({ ...params, limit, offset });
+}
+
+export function getForumStats() {
+  const db = getDb();
+  const total = db.prepare('SELECT COUNT(*) as count FROM forum_posts').get() as { count: number };
+  const activeSources = db.prepare('SELECT COUNT(*) as count FROM forum_sources WHERE enabled = 1').get() as { count: number };
+  const avgSentiment = db.prepare('SELECT AVG(sentiment) as avg FROM forum_posts').get() as { avg: number };
+  const trendingTopics = db.prepare('SELECT COUNT(*) as count FROM forum_topics WHERE is_trending = 1').get() as { count: number };
+  const topSources = db.prepare('SELECT source, COUNT(*) as count, AVG(sentiment) as avg_sentiment, AVG(score) as avg_score FROM forum_posts GROUP BY source ORDER BY count DESC LIMIT 10').all();
+  const topCategories = db.prepare('SELECT category, COUNT(*) as count FROM forum_posts GROUP BY category ORDER BY count DESC LIMIT 10').all();
+  const recentActivity = db.prepare('SELECT DATE(published_at) as day, COUNT(*) as count, AVG(sentiment) as avg_sentiment FROM forum_posts WHERE published_at IS NOT NULL GROUP BY DATE(published_at) ORDER BY day DESC LIMIT 30').all();
+
+  return {
+    totalPosts: total.count,
+    activeSources: activeSources.count,
+    avgSentiment: Math.round((avgSentiment.avg || 0) * 100) / 100,
+    trendingTopics: trendingTopics.count,
+    topSources,
+    topCategories,
+    recentActivity,
+  };
+}
+
+export function getForumTopics(opts?: { trending?: boolean; limit?: number }) {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.trending) { conditions.push('is_trending = 1'); }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const limit = opts?.limit || 30;
+
+  return db.prepare(`SELECT * FROM forum_topics ${where} ORDER BY post_count DESC, avg_score DESC LIMIT @limit`).all({ ...params, limit });
+}
+
+export function getForumSources() {
+  return getDb().prepare('SELECT * FROM forum_sources ORDER BY post_count DESC, name ASC').all();
+}
+
+export function createForumSource(data: { name: string; type?: string; url?: string; icon?: string; description?: string; enabled?: number; scrape_config?: string }) {
+  const db = getDb();
+  return db.prepare(`
+    INSERT INTO forum_sources (name, type, url, icon, description, enabled, scrape_config)
+    VALUES (@name, @type, @url, @icon, @description, @enabled, @scrape_config)
+  `).run({
+    name: data.name,
+    type: data.type || 'forum',
+    url: data.url || null,
+    icon: data.icon || null,
+    description: data.description || null,
+    enabled: data.enabled ?? 1,
+    scrape_config: data.scrape_config || '{}',
+  });
+}
+
+export function updateForumSource(id: number, data: Partial<{ name: string; type: string; url: string; icon: string; description: string; enabled: number; scrape_config: string }>) {
+  const db = getDb();
+  const fields = Object.keys(data).map(k => `${k} = @${k}`).join(', ');
+  if (!fields) return;
+  return db.prepare(`UPDATE forum_sources SET ${fields}, updated_at = CURRENT_TIMESTAMP WHERE id = @id`).run({ ...data, id });
+}
+
+export function deleteForumSource(id: number) {
+  return getDb().prepare('DELETE FROM forum_sources WHERE id = ?').run(id);
+}
+
+export function upsertForumPost(data: {
+  external_id: string; source: string; source_id?: number; title: string; body?: string;
+  author?: string; url?: string; score?: number; comments?: number; sentiment?: number;
+  category?: string; tags?: string; is_trending?: number; hot_words?: string; data_json?: string;
+  published_at?: string;
+}) {
+  const db = getDb();
+  return db.prepare(`
+    INSERT INTO forum_posts (external_id, source, source_id, title, body, author, url, score, comments, sentiment, category, tags, is_trending, hot_words, data_json, published_at)
+    VALUES (@external_id, @source, @source_id, @title, @body, @author, @url, @score, @comments, @sentiment, @category, @tags, @is_trending, @hot_words, @data_json, @published_at)
+    ON CONFLICT(external_id, source) DO UPDATE SET
+      title = @title,
+      body = @body,
+      score = @score,
+      comments = @comments,
+      sentiment = @sentiment,
+      is_trending = @is_trending,
+      hot_words = @hot_words,
+      updated_at = CURRENT_TIMESTAMP
+  `).run({
+    external_id: data.external_id,
+    source: data.source,
+    source_id: data.source_id || null,
+    title: data.title,
+    body: data.body || null,
+    author: data.author || null,
+    url: data.url || null,
+    score: data.score || 0,
+    comments: data.comments || 0,
+    sentiment: data.sentiment || 0,
+    category: data.category || 'general',
+    tags: data.tags || '[]',
+    is_trending: data.is_trending || 0,
+    hot_words: data.hot_words || '[]',
+    data_json: data.data_json || '{}',
+    published_at: data.published_at || null,
+  });
+}
+
+export function upsertForumTopic(data: {
+  name: string; slug: string; post_count?: number; avg_sentiment?: number;
+  avg_score?: number; sources?: string; is_trending?: number;
+}) {
+  const db = getDb();
+  return db.prepare(`
+    INSERT INTO forum_topics (name, slug, post_count, avg_sentiment, avg_score, sources, is_trending)
+    VALUES (@name, @slug, @post_count, @avg_sentiment, @avg_score, @sources, @is_trending)
+    ON CONFLICT(slug) DO UPDATE SET
+      post_count = @post_count,
+      avg_sentiment = @avg_sentiment,
+      avg_score = @avg_score,
+      sources = @sources,
+      is_trending = @is_trending,
+      last_seen = CURRENT_TIMESTAMP,
+      updated_at = CURRENT_TIMESTAMP
+  `).run({
+    name: data.name,
+    slug: data.slug,
+    post_count: data.post_count || 0,
+    avg_sentiment: data.avg_sentiment || 0,
+    avg_score: data.avg_score || 0,
+    sources: data.sources || '[]',
+    is_trending: data.is_trending || 0,
   });
 }
