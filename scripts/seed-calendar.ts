@@ -178,9 +178,9 @@ function seedCalendar() {
   `);
 
   // Clear existing seed data
-  db.prepare('DELETE FROM calendar_events').run();
-  db.prepare('DELETE FROM seasonal_patterns').run();
   db.prepare('DELETE FROM engagement_milestones').run();
+  db.prepare('DELETE FROM seasonal_patterns').run();
+  db.prepare('DELETE FROM calendar_events').run();
 
   const insertEvent = db.prepare(`
     INSERT INTO calendar_events (title, description, event_type, start_date, end_date, recurrence, region, impact_score, categories, tags, color)
