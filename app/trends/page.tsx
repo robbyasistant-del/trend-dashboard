@@ -59,7 +59,7 @@ export default function TrendsPage() {
     setLoading(false);
   }
 
-  const categories = [...new Set(trends.map(t => t.category).filter(Boolean))];
+  const categories = Array.from(new Set(trends.map(t => t.category).filter(Boolean)));
 
   // Chart data: aggregate by lifecycle
   const lifecycleCounts = trends.reduce((acc, t) => {
@@ -79,14 +79,19 @@ export default function TrendsPage() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-white">🔥 Viral Trends</h1>
           <p className="text-sm text-slate-500 mt-1">Real-time casual games market intelligence</p>
         </div>
-        <button onClick={fetchData} className="px-4 py-2 bg-dark-600 hover:bg-dark-500 border border-dark-500 rounded-lg text-sm text-slate-300 transition-all">
-          ↻ Refresh
-        </button>
+        <div className="flex gap-2">
+          <a href="/correlations" className="px-3 py-2 text-xs bg-dark-700 border border-dark-500 rounded-lg text-slate-300 hover:text-neon-cyan hover:border-neon-cyan/30 transition-all">🔗 Cross-Platform</a>
+          <a href="/api/export?type=csv&source=trends" className="px-3 py-2 text-xs bg-dark-700 border border-dark-500 rounded-lg text-slate-300 hover:text-white hover:border-neon-cyan transition-all">📥 Export CSV</a>
+          <a href="/api/export?type=json&source=trends" className="px-3 py-2 text-xs bg-dark-700 border border-dark-500 rounded-lg text-slate-300 hover:text-white hover:border-neon-cyan transition-all">📥 Export JSON</a>
+          <button onClick={fetchData} className="px-4 py-2 bg-dark-600 hover:bg-dark-500 border border-dark-500 rounded-lg text-sm text-slate-300 transition-all">
+            ↻ Refresh
+          </button>
+        </div>
       </div>
 
       {/* Stats row */}
@@ -192,7 +197,16 @@ export default function TrendsPage() {
                     {trend.source_name && <span>📡 {trend.source_name}</span>}
                     {trend.category && <span>🏷️ {trend.category}</span>}
                     {trend.region !== 'global' && <span>🌍 {trend.region}</span>}
-                    <span>📈 vel: {trend.velocity.toFixed(1)}</span>
+                    {trend.velocity !== 0 && (
+                      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                        Math.abs(trend.velocity) >= 20 ? 'bg-red-500/20 text-red-400' :
+                        Math.abs(trend.velocity) >= 10 ? 'bg-orange-500/20 text-orange-400' :
+                        Math.abs(trend.velocity) >= 5 ? 'bg-yellow-500/20 text-yellow-400' :
+                        'bg-slate-500/20 text-slate-400'
+                      }`}>
+                        {trend.velocity > 0 ? '🚀' : '📉'} {trend.velocity > 0 ? '+' : ''}{trend.velocity.toFixed(1)}
+                      </span>
+                    )}
                     <span>💬 {trend.mentions} mentions</span>
                     {tags.length > 0 && tags.slice(0, 3).map(t => (
                       <span key={t} className="bg-dark-600 px-1.5 py-0.5 rounded text-slate-400">{t}</span>
