@@ -1,0 +1,7 @@
+node_modules/
+.next/
+dist/
+trends.db
+data/inbox/*.json
+!data/inbox/.gitkeep
+*.log
