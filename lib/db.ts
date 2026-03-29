@@ -99,6 +99,65 @@ function initTables(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_trends_detected_at ON trends(detected_at DESC);
     CREATE INDEX IF NOT EXISTS idx_trend_snapshots_trend_id ON trend_snapshots(trend_id);
     CREATE INDEX IF NOT EXISTS idx_cron_runs_config_id ON cron_runs(cron_config_id);
+
+    -- Word Trends tables
+    CREATE TABLE IF NOT EXISTS word_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      word TEXT NOT NULL,
+      source TEXT,
+      category TEXT DEFAULT 'general',
+      frequency INTEGER DEFAULT 1,
+      score REAL DEFAULT 0,
+      growth REAL DEFAULT 0,
+      sentiment REAL DEFAULT 0,
+      first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+      last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+      data_json TEXT DEFAULT '{}',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(word, source)
+    );
+
+    CREATE TABLE IF NOT EXISTS word_frequencies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      word_id INTEGER REFERENCES word_entries(id) ON DELETE CASCADE,
+      frequency INTEGER DEFAULT 0,
+      mentions INTEGER DEFAULT 0,
+      period TEXT NOT NULL,
+      period_type TEXT DEFAULT 'daily',
+      recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS word_competitions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      word_a_id INTEGER REFERENCES word_entries(id) ON DELETE CASCADE,
+      word_b_id INTEGER REFERENCES word_entries(id) ON DELETE CASCADE,
+      overlap_score REAL DEFAULT 0,
+      context TEXT,
+      category TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS word_clusters (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT,
+      words TEXT DEFAULT '[]',
+      centroid_word TEXT,
+      coherence_score REAL DEFAULT 0,
+      category TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_word_entries_word ON word_entries(word);
+    CREATE INDEX IF NOT EXISTS idx_word_entries_category ON word_entries(category);
+    CREATE INDEX IF NOT EXISTS idx_word_entries_score ON word_entries(score DESC);
+    CREATE INDEX IF NOT EXISTS idx_word_frequencies_word_id ON word_frequencies(word_id);
+    CREATE INDEX IF NOT EXISTS idx_word_frequencies_period ON word_frequencies(period);
+    CREATE INDEX IF NOT EXISTS idx_word_competitions_word_a ON word_competitions(word_a_id);
+    CREATE INDEX IF NOT EXISTS idx_word_competitions_word_b ON word_competitions(word_b_id);
+    CREATE INDEX IF NOT EXISTS idx_word_clusters_category ON word_clusters(category);
   `);
 
   // Migration: add target_dashboard column if missing (for existing DBs)
@@ -213,4 +272,164 @@ export function getCronRunStats() {
 
 export function getTopTags(limit = 30) {
   return getDb().prepare('SELECT * FROM tags ORDER BY count DESC LIMIT ?').all(limit);
+}
+
+// ── Word helpers ──────────────────────────────────────────────
+
+export function getWords(opts?: { category?: string; source?: string; search?: string; limit?: number; offset?: number }) {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.category) { conditions.push('category = @category'); params.category = opts.category; }
+  if (opts?.source) { conditions.push('source = @source'); params.source = opts.source; }
+  if (opts?.search) { conditions.push('word LIKE @search'); params.search = '%' + opts.search + '%'; }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const limit = opts?.limit || 100;
+  const offset = opts?.offset || 0;
+
+  return db.prepare(`SELECT * FROM word_entries ${where} ORDER BY score DESC, frequency DESC LIMIT @limit OFFSET @offset`).all({ ...params, limit, offset });
+}
+
+export function getWordStats() {
+  const db = getDb();
+  const total = db.prepare('SELECT COUNT(*) as count FROM word_entries').get() as { count: number };
+  const trending = db.prepare('SELECT COUNT(*) as count FROM word_entries WHERE growth > 0').get() as { count: number };
+  const avgFreq = db.prepare('SELECT AVG(frequency) as avg FROM word_entries').get() as { avg: number };
+  const topCategoryRow = db.prepare('SELECT category, COUNT(*) as count FROM word_entries GROUP BY category ORDER BY count DESC LIMIT 1').get() as { category: string; count: number } | undefined;
+  const categories = db.prepare('SELECT category, COUNT(*) as count FROM word_entries GROUP BY category ORDER BY count DESC LIMIT 10').all();
+  const sources = db.prepare('SELECT source, COUNT(*) as count FROM word_entries GROUP BY source ORDER BY count DESC LIMIT 10').all();
+  return {
+    total: total.count,
+    trending: trending.count,
+    avgFrequency: Math.round(avgFreq.avg || 0),
+    topCategory: topCategoryRow?.category || 'N/A',
+    categories,
+    sources,
+  };
+}
+
+export function getWordFrequency(opts?: { wordId?: number; word?: string; periodType?: string; limit?: number }) {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.wordId) { conditions.push('wf.word_id = @wordId'); params.wordId = opts.wordId; }
+  if (opts?.word) {
+    conditions.push('we.word = @word');
+    params.word = opts.word;
+  }
+  if (opts?.periodType) { conditions.push('wf.period_type = @periodType'); params.periodType = opts.periodType; }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const limit = opts?.limit || 90;
+
+  return db.prepare(`
+    SELECT wf.*, we.word FROM word_frequencies wf
+    LEFT JOIN word_entries we ON wf.word_id = we.id
+    ${where}
+    ORDER BY wf.period ASC
+    LIMIT @limit
+  `).all({ ...params, limit });
+}
+
+export function getTopWords(opts?: { category?: string; limit?: number }) {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.category) { conditions.push('category = @category'); params.category = opts.category; }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const limit = opts?.limit || 20;
+
+  return db.prepare(`SELECT * FROM word_entries ${where} ORDER BY score DESC, frequency DESC LIMIT @limit`).all({ ...params, limit });
+}
+
+export function getWordCompetitions(opts?: { category?: string; limit?: number }) {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.category) { conditions.push('wc.category = @category'); params.category = opts.category; }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const limit = opts?.limit || 50;
+
+  return db.prepare(`
+    SELECT wc.*, wa.word as word_a, wb.word as word_b
+    FROM word_competitions wc
+    LEFT JOIN word_entries wa ON wc.word_a_id = wa.id
+    LEFT JOIN word_entries wb ON wc.word_b_id = wb.id
+    ${where}
+    ORDER BY wc.overlap_score DESC
+    LIMIT @limit
+  `).all({ ...params, limit });
+}
+
+export function getWordClusters(opts?: { category?: string; limit?: number }) {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: Record<string, unknown> = {};
+
+  if (opts?.category) { conditions.push('category = @category'); params.category = opts.category; }
+
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const limit = opts?.limit || 20;
+
+  return db.prepare(`SELECT * FROM word_clusters ${where} ORDER BY coherence_score DESC LIMIT @limit`).all({ ...params, limit });
+}
+
+export function upsertWordEntry(data: { word: string; source?: string; category?: string; frequency?: number; score?: number; growth?: number; sentiment?: number; data_json?: string }) {
+  const db = getDb();
+  const stmt = db.prepare(`
+    INSERT INTO word_entries (word, source, category, frequency, score, growth, sentiment, data_json)
+    VALUES (@word, @source, @category, @frequency, @score, @growth, @sentiment, @data_json)
+    ON CONFLICT(word, source) DO UPDATE SET
+      frequency = frequency + @frequency,
+      score = @score,
+      growth = @growth,
+      sentiment = @sentiment,
+      last_seen = CURRENT_TIMESTAMP,
+      updated_at = CURRENT_TIMESTAMP
+  `);
+  return stmt.run({
+    word: data.word,
+    source: data.source || null,
+    category: data.category || 'general',
+    frequency: data.frequency || 1,
+    score: data.score || 0,
+    growth: data.growth || 0,
+    sentiment: data.sentiment || 0,
+    data_json: data.data_json || '{}',
+  });
+}
+
+export function upsertWordFrequency(data: { word_id: number; frequency: number; mentions?: number; period: string; period_type?: string }) {
+  const db = getDb();
+  return db.prepare(`
+    INSERT INTO word_frequencies (word_id, frequency, mentions, period, period_type)
+    VALUES (@word_id, @frequency, @mentions, @period, @period_type)
+  `).run({
+    word_id: data.word_id,
+    frequency: data.frequency,
+    mentions: data.mentions || 0,
+    period: data.period,
+    period_type: data.period_type || 'daily',
+  });
+}
+
+export function upsertWordCompetition(data: { word_a_id: number; word_b_id: number; overlap_score: number; context?: string; category?: string }) {
+  const db = getDb();
+  return db.prepare(`
+    INSERT INTO word_competitions (word_a_id, word_b_id, overlap_score, context, category)
+    VALUES (@word_a_id, @word_b_id, @overlap_score, @context, @category)
+  `).run({
+    word_a_id: data.word_a_id,
+    word_b_id: data.word_b_id,
+    overlap_score: data.overlap_score,
+    context: data.context || null,
+    category: data.category || null,
+  });
 }

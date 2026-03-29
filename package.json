@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start -p 4002",
     "seed": "npx tsx scripts/seed.ts",
+    "seed:words": "npx tsx scripts/seed-words.ts",
     "ingest": "npx tsx scripts/process-inbox.ts"
   },
   "dependencies": {

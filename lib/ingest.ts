@@ -20,9 +20,22 @@ export interface InboxTrend {
   data?: Record<string, unknown>;
 }
 
+export interface InboxWord {
+  word: string;
+  source?: string;
+  category?: string;
+  frequency?: number;
+  score?: number;
+  growth?: number;
+  sentiment?: number;
+  data?: Record<string, unknown>;
+}
+
 export interface InboxPayload {
   source?: string;
+  target?: string;
   trends?: InboxTrend[];
+  words?: InboxWord[];
   cron_config_id?: number;
 }
 
@@ -123,12 +136,65 @@ export function ingestPayload(payload: InboxPayload) {
     batchInsert(payload.trends);
   }
 
+  // ── Words ingestion ──────────────────────────────────────────
+  if ((payload.target === 'words' || payload.words) && payload.words && Array.isArray(payload.words)) {
+    const upsertWord = db.prepare(`
+      INSERT INTO word_entries (word, source, category, frequency, score, growth, sentiment, data_json)
+      VALUES (@word, @source, @category, @frequency, @score, @growth, @sentiment, @data_json)
+      ON CONFLICT(word, source) DO UPDATE SET
+        frequency = frequency + @frequency,
+        score = @score,
+        growth = @growth,
+        sentiment = @sentiment,
+        last_seen = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP
+    `);
+
+    const insertFreq = db.prepare(`
+      INSERT INTO word_frequencies (word_id, frequency, mentions, period, period_type)
+      VALUES (@word_id, @frequency, @mentions, @period, @period_type)
+    `);
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    const batchWords = db.transaction((words: InboxWord[]) => {
+      for (const w of words) {
+        const result = upsertWord.run({
+          word: w.word.toLowerCase().trim(),
+          source: w.source || payload.source || null,
+          category: w.category || 'general',
+          frequency: w.frequency || 1,
+          score: w.score || 0,
+          growth: w.growth || 0,
+          sentiment: w.sentiment || 0,
+          data_json: JSON.stringify(w.data || {}),
+        });
+
+        const wordId = result.lastInsertRowid || db.prepare('SELECT id FROM word_entries WHERE word = ? AND source = ?').get(w.word.toLowerCase().trim(), w.source || payload.source || null) as { id: number } | undefined;
+        const id = typeof wordId === 'number' ? wordId : (wordId as { id: number } | undefined)?.id;
+
+        if (id) {
+          insertFreq.run({
+            word_id: id,
+            frequency: w.frequency || 1,
+            mentions: w.frequency || 1,
+            period: today,
+            period_type: 'daily',
+          });
+        }
+      }
+    });
+
+    batchWords(payload.words);
+  }
+
   // Log cron run if applicable
   if (payload.cron_config_id) {
+    const itemCount = (payload.trends?.length || 0) + (payload.words?.length || 0);
     db.prepare(`
       INSERT INTO cron_runs (cron_config_id, status, items_processed, started_at, completed_at)
       VALUES (?, 'success', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-    `).run(payload.cron_config_id, payload.trends?.length || 0);
+    `).run(payload.cron_config_id, itemCount);
 
     db.prepare('UPDATE cron_configs SET last_run = CURRENT_TIMESTAMP WHERE id = ?').run(payload.cron_config_id);
   }
