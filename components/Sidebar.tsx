@@ -9,7 +9,7 @@ const NAV_ITEMS = [
   { href: '/calendar', label: 'Calendar Trends', icon: '📅', active: false },
   { href: '/words', label: 'Words Trends', icon: '💬', active: true },
   { href: '/forums', label: 'Games Forums', icon: '🎮', active: true },
-  { href: '/apps-market', label: 'Apps Market', icon: '📱', active: false },
+  { href: '/apps-market', label: 'Apps Market', icon: '📱', active: true },
   { divider: true },
   { href: '/crons', label: 'Crons Settings', icon: '⚙️', active: true },
 ] as const;
