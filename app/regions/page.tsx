@@ -5,7 +5,12 @@ import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
   ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, Cell, Legend,
 } from 'recharts';
-import { ComposableMap, Geographies, Geography, ZoomableGroup } from 'react-simple-maps';
+import dynamic from 'next/dynamic';
+
+const RegionMap = dynamic(() => import('../../components/RegionMap'), {
+  ssr: false,
+  loading: () => <div className="card animate-pulse" style={{ height: 480 }} />,
+});
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -209,21 +214,11 @@ export default function RegionsPage() {
   const [compareSelected, setCompareSelected] = useState<Set<string>>(new Set());
   const [compareData, setCompareData] = useState<RegionMetric[]>([]);
   const [showCompare, setShowCompare] = useState(false);
-  const [hoveredGeo, setHoveredGeo] = useState<{ name: string; value: number; x: number; y: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [mapZoom, setMapZoom] = useState(1);
-  const [mapCenter, setMapCenter] = useState<[number, number]>([0, 0]);
   const [rebuilding, setRebuilding] = useState(false);
   const [rebuildMsg, setRebuildMsg] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-
-  // Create lookup from mapData
-  const mapLookup = React.useMemo(() => {
-    const m = new Map<string, MapDataPoint>();
-    for (const d of mapData) m.set(d.code, d);
-    return m;
-  }, [mapData]);
 
   // ── Data Fetching ──────────────────────────────────────
 
@@ -306,12 +301,17 @@ export default function RegionsPage() {
 
   const currentMetricInfo = METRICS.find(m => m.key === selectedMetric) || METRICS[0];
 
-  // Top 10 for leaderboard
+  // Top regions for leaderboard (filtered by search)
   const leaderboard = React.useMemo(() => {
-    return [...regions]
+    let filtered = [...regions];
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      filtered = filtered.filter(r => r.name.toLowerCase().includes(q) || r.code.toLowerCase().includes(q));
+    }
+    return filtered
       .sort((a, b) => getMetricValue(b, selectedMetric) - getMetricValue(a, selectedMetric))
-      .slice(0, 10);
-  }, [regions, selectedMetric]);
+      .slice(0, searchQuery.trim() ? 50 : 10);
+  }, [regions, selectedMetric, searchQuery]);
 
   const maxLeaderboardVal = leaderboard.length > 0
     ? Math.max(...leaderboard.map(r => getMetricValue(r, selectedMetric)))
@@ -353,7 +353,22 @@ export default function RegionsPage() {
         </div>
 
         {/* Period Switcher */}
-        <div className="flex items-center bg-dark-800 border border-dark-500 rounded-lg p-1">
+        <div className="flex items-center gap-3">
+          {rebuildMsg && (
+            <span className="text-xs text-neon-green animate-pulse">{rebuildMsg}</span>
+          )}
+          <button
+            onClick={handleRebuild}
+            disabled={rebuilding}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
+              rebuilding
+                ? 'border-dark-500 text-slate-500 cursor-wait'
+                : 'border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/10'
+            }`}
+          >
+            {rebuilding ? '⏳ Rebuilding…' : '🔄 Rebuild Metrics'}
+          </button>
+          <div className="flex items-center bg-dark-800 border border-dark-500 rounded-lg p-1">
           {PERIODS.map(p => (
             <button
               key={p}
@@ -367,11 +382,12 @@ export default function RegionsPage() {
               {p.charAt(0).toUpperCase() + p.slice(1)}
             </button>
           ))}
+          </div>
         </div>
       </div>
 
       {/* Stats Row */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {loading ? (
           <>
             <StatSkeleton />
@@ -430,110 +446,63 @@ export default function RegionsPage() {
       </div>
 
       {/* Main Content: Map + Leaderboard */}
-      <div className="grid grid-cols-3 gap-6">
-        {/* World Map */}
-        <div className="col-span-2">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* World Map (hidden on mobile, replaced by list) */}
+        <div className="hidden md:block lg:col-span-2">
           {loading ? <MapSkeleton /> : (
-            <div className="card relative" style={{ padding: 0, overflow: 'hidden' }}>
-              <div style={{ height: 480 }}>
-                <ComposableMap
-                  projectionConfig={{ rotate: [-10, 0, 0], scale: 147 }}
-                  style={{ width: '100%', height: '100%' }}
-                >
-                  <ZoomableGroup>
-                    <Geographies geography={GEO_URL}>
-                      {({ geographies }: { geographies: any[] }) =>
-                        geographies.map((geo: any) => {
-                          const numericId = geo.id;
-                          const alpha2 = NUMERIC_TO_ALPHA2[numericId];
-                          const dataPoint = alpha2 ? mapLookup.get(alpha2) : undefined;
-                          const isSelected = alpha2 === selectedRegion;
-
-                          return (
-                            <Geography
-                              key={geo.rsmKey}
-                              geography={geo}
-                              onMouseEnter={(evt: React.MouseEvent) => {
-                                if (dataPoint) {
-                                  setHoveredGeo({
-                                    name: dataPoint.name,
-                                    value: dataPoint.value,
-                                    x: evt.clientX,
-                                    y: evt.clientY,
-                                  });
-                                }
-                              }}
-                              onMouseLeave={() => setHoveredGeo(null)}
-                              onClick={() => { if (alpha2) handleGeoClick(alpha2); }}
-                              style={{
-                                default: {
-                                  fill: isSelected
-                                    ? '#22d3ee'
-                                    : dataPoint
-                                      ? getHeatColor(dataPoint.normalized)
-                                      : '#1e1e48',
-                                  stroke: '#2a2a5a',
-                                  strokeWidth: 0.5,
-                                  outline: 'none',
-                                },
-                                hover: {
-                                  fill: isSelected ? '#22d3ee' : dataPoint ? '#a855f7' : '#2a2a5a',
-                                  stroke: '#94a3b8',
-                                  strokeWidth: 1,
-                                  outline: 'none',
-                                  cursor: alpha2 ? 'pointer' : 'default',
-                                },
-                                pressed: { outline: 'none' },
-                              }}
-                            />
-                          );
-                        })
-                      }
-                    </Geographies>
-                  </ZoomableGroup>
-                </ComposableMap>
-              </div>
-
-              {/* Map Legend */}
-              <div className="absolute bottom-4 left-4 flex items-center gap-2 bg-dark-800/90 backdrop-blur px-3 py-2 rounded-lg border border-dark-500">
-                <span className="text-[10px] text-slate-400">Low</span>
-                <div className="flex gap-0.5">
-                  {[0, 0.2, 0.4, 0.6, 0.8, 1].map(v => (
-                    <div
-                      key={v}
-                      className="w-5 h-3 rounded-sm"
-                      style={{ background: getHeatColor(v) }}
-                    />
-                  ))}
-                </div>
-                <span className="text-[10px] text-slate-400">High</span>
-                <span className="text-[10px] text-slate-500 ml-1">
-                  {currentMetricInfo.icon} {currentMetricInfo.label}
-                </span>
-              </div>
-
-              {/* Hover Tooltip */}
-              {hoveredGeo && (
-                <div
-                  className="fixed z-50 bg-dark-800 border border-dark-500 rounded-lg px-3 py-2 shadow-xl pointer-events-none"
-                  style={{ left: hoveredGeo.x + 12, top: hoveredGeo.y - 40 }}
-                >
-                  <p className="text-xs font-medium text-white">{hoveredGeo.name}</p>
-                  <p className="text-xs text-slate-400">
-                    {currentMetricInfo.label}: <span className="text-white font-mono">{formatNum(hoveredGeo.value)}</span>
-                  </p>
-                </div>
-              )}
-            </div>
+            <RegionMap
+              mapData={mapData}
+              selectedRegion={selectedRegion}
+              currentMetricInfo={currentMetricInfo}
+              onRegionClick={handleGeoClick}
+            />
           )}
         </div>
 
+        {/* Mobile Fallback: Region list instead of map */}
+        <div className="md:hidden">
+          <div className="card">
+            <h3 className="text-sm font-bold text-white mb-3">🌍 Regions</h3>
+            <div className="space-y-1.5 max-h-[300px] overflow-y-auto">
+              {leaderboard.map((r, i) => {
+                const val = getMetricValue(r, selectedMetric);
+                return (
+                  <button
+                    key={r.code}
+                    onClick={() => handleGeoClick(r.code)}
+                    className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-all ${
+                      selectedRegion === r.code ? 'bg-neon-cyan/10 border border-neon-cyan/30' : 'hover:bg-dark-600 border border-transparent'
+                    }`}
+                  >
+                    <span className="text-xs text-slate-500 w-4 font-mono">{i + 1}</span>
+                    <span>{FLAGS[r.code] || '🌐'}</span>
+                    <span className="text-xs text-white flex-1 truncate">{r.name}</span>
+                    <span className="text-xs font-mono text-neon-cyan">{formatNum(val)}</span>
+                  </button>
+                );
+              })}
+              {leaderboard.length === 0 && (
+                <p className="text-xs text-slate-500 text-center py-4">No regions found</p>
+              )}
+            </div>
+          </div>
+        </div>
+
         {/* Leaderboard */}
-        <div className="col-span-1">
+        <div className="lg:col-span-1">
           <div className="card h-full" style={{ maxHeight: 520, overflowY: 'auto' }}>
-            <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
-              🏆 Top 10 — {currentMetricInfo.label}
-            </h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                🏆 Top Regions — {currentMetricInfo.label}
+              </h3>
+            </div>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Search regions…"
+              className="w-full bg-dark-900 text-xs text-white px-3 py-2 rounded-lg border border-dark-500 mb-3 focus:outline-none focus:border-neon-cyan/50 placeholder-slate-600"
+            />
             {loading ? <ListSkeleton rows={10} /> : (
               <div className="space-y-2">
                 {leaderboard.map((r, i) => {
@@ -603,7 +572,7 @@ export default function RegionsPage() {
           ) : regionDetail?.metrics ? (
             <div>
               {/* Metrics Grid */}
-              <div className="grid grid-cols-5 gap-4 mb-6">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
                 {METRICS.map(m => {
                   const val = regionDetail.metrics ? getMetricValue(regionDetail.metrics, m.key) : 0;
                   return (
@@ -690,7 +659,7 @@ export default function RegionsPage() {
         )}
 
         {compareSelected.size >= 2 && compareData.length > 0 ? (
-          <div className="grid grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Radar Chart */}
             <div>
               <h4 className="text-xs text-slate-400 uppercase tracking-wider mb-3">Radar Overview</h4>
